@@ -1,0 +1,84 @@
+// 按用户隔离的会话池 + LRU。
+// 纯编排逻辑(取/建会话、touch、淘汰、resume),通过注入 spawn 工厂与 load/save 回调,
+// 可完全脱离真实子进程单测(in-process)。
+import type { Reply, UserContent } from './types.js'
+
+/** 一个用户会话的最小契约(ClaudeSession 实现它;测试用假实现)。 */
+export interface Session {
+  /** 该用户的会话上下文内提问,等完整回复后 resolve。 */
+  send(content: UserContent): Promise<Reply>
+  /** 关闭会话子进程(LRU 淘汰/停止时调用)。 */
+  kill(): void
+  /** Claude 分配的会话 ID(用于持久化 + 下次 --resume)。 */
+  claudeSessionId?: string
+}
+
+export interface SessionPoolDeps {
+  cwd: string
+  systemPrompt: string
+  maxSessions: number
+  /** 新建会话。生产=ClaudeSession.spawn;测试=返回记录 resumeId 的假会话。 */
+  spawn: (opts: { cwd: string; systemPrompt: string; resumeId?: string }) => Promise<Session>
+  /** 读该用户上次会话 ID(默认接 state.ts)。 */
+  loadSessionId?: (userId: string) => Promise<string | undefined>
+  /** 存该用户会话 ID(默认接 state.ts)。 */
+  saveSessionId?: (userId: string, id: string) => Promise<void>
+}
+
+export class SessionPool {
+  /** Map 保持插入顺序;访问时 delete+set 把最近用者移到末尾,淘汰从头部取 → 即 LRU。 */
+  private readonly live = new Map<string, Session>()
+  private readonly loadSessionId: (u: string) => Promise<string | undefined>
+  private readonly saveSessionId: (u: string, id: string) => Promise<void>
+
+  constructor(private readonly deps: SessionPoolDeps) {
+    this.loadSessionId = deps.loadSessionId ?? (async () => undefined)
+    this.saveSessionId = deps.saveSessionId ?? (async () => undefined)
+  }
+
+  /** 取该用户的活跃会话;无则按持久化的 resumeId 续接/新建,并持久化新会话 ID。 */
+  async acquire(userId: string): Promise<Session> {
+    const existing = this.live.get(userId)
+    if (existing) {
+      this.touch(userId, existing)
+      return existing
+    }
+    const resumeId = await this.loadSessionId(userId)
+    const session = await this.deps.spawn({
+      cwd: this.deps.cwd,
+      systemPrompt: this.deps.systemPrompt,
+      resumeId,
+    })
+    if (session.claudeSessionId) {
+      await this.saveSessionId(userId, session.claudeSessionId)
+    }
+    this.live.set(userId, session)
+    this.evictIfNeeded()
+    return session
+  }
+
+  /** 关闭并清空所有活跃会话(进程退出时调用)。 */
+  stopAll(): void {
+    for (const s of this.live.values()) s.kill()
+    this.live.clear()
+  }
+
+  get size(): number {
+    return this.live.size
+  }
+
+  private touch(userId: string, session: Session): void {
+    this.live.delete(userId)
+    this.live.set(userId, session)
+  }
+
+  private evictIfNeeded(): void {
+    while (this.live.size > this.deps.maxSessions) {
+      const oldest = this.live.keys().next().value
+      if (oldest === undefined) break
+      const evicted = this.live.get(oldest)
+      this.live.delete(oldest)
+      evicted?.kill()
+    }
+  }
+}

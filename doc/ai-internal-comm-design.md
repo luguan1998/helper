@@ -1,5 +1,14 @@
 # 内部通讯软件 AI 集成设计方案
 
+> ⚠️ **已被取代(superseded)**:本文档为早期方案,把系统拆成 poller/claude-session/renderer/sender/ocr 等**浅模块**。
+> 实际实现采用 INTERFACE-DESIGN.md("Design It Twice")比较后的**三者杂交方案**——
+> 单一深模块 `Assistant` + 三个有据可依的接缝(Channel/Llm/Renderer)+ Claude 视觉替代 OCR + 按用户隔离会话。
+> 现行实现见 `src/`(尤其 `src/assistant.ts` / `src/claude-client.ts` / `src/session-pool.ts`),
+> 完整方案见 `~/.claude/plans/c-users-l30033004-claude-skills-improve-generic-biscuit.md`。
+> 本文保留作为历史背景与截图渲染细节参考。
+
+---
+
 > 约束：通讯软件仅支持 text / picture 两种消息格式，不支持流式渲染
 
 ---
