@@ -60,18 +60,22 @@ function buildClaudeArgs(opts: { cwd: string; systemPrompt: string; resumeId?: s
 }
 
 // ── spawn(简化自 ai.ts:124)──
+// model 经 env ANTHROPIC_MODEL 注入(跨 claude/openclaude/GLM 变体最稳,不依赖 --model flag 是否支持)。
 function spawnClaude(opts: {
   cwd: string
   systemPrompt: string
   resumeId?: string
+  model?: string
   cliCommand?: string
 }): ChildProcess {
   const resolved = findBinary(opts.cliCommand)
   if ('error' in resolved) throw new Error(resolved.error)
   const args = buildClaudeArgs(opts)
+  const env = sanitizeEnvForCli()
+  if (opts.model) env.ANTHROPIC_MODEL = opts.model
   return spawn(resolved.binary, args, {
     cwd: opts.cwd,
-    env: sanitizeEnvForCli(),
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: process.platform === 'win32', // Windows 上 .cmd 需要 shell 解析
   })
@@ -92,6 +96,7 @@ export interface ClaudeSessionOpts {
   cwd: string
   systemPrompt: string
   resumeId?: string
+  model?: string
   cliCommand?: string
 }
 
@@ -249,20 +254,46 @@ export class ClaudeSession implements Session {
   }
 }
 
-// ── Llm 适配器工厂:ClaudeCliLlm = SessionPool(ClaudeSession)──
+// ── Llm 适配器工厂:ClaudeCliLlm = SessionPool(ClaudeSession) 或 无状态一次性 ──
 export interface ClaudeCliLlmOptions {
   cwd: string
   systemPrompt: string
+  /** Claude 模型 id(经 env ANTHROPIC_MODEL 切换模型)。 */
+  model?: string
+  /** true(默认,对话型,按用户续接 SessionPool)/ false(无状态,每次 spawn→ask→kill,识图等用)。 */
+  pooled?: boolean
   maxSessions?: number
   cliCommand?: string
 }
 
+/** 无状态 Llm:每次 ask 新建会话、ask 完即 kill(userId 被忽略,无多轮续接)。识图等用。 */
+function createStatelessLlm(opts: ClaudeCliLlmOptions): Llm {
+  return {
+    async ask(_userId: string, content: UserContent): Promise<Reply> {
+      const session = await ClaudeSession.spawn({
+        cwd: opts.cwd,
+        systemPrompt: opts.systemPrompt,
+        model: opts.model,
+        cliCommand: opts.cliCommand,
+      })
+      try {
+        return await session.send(content)
+      } finally {
+        session.kill()
+      }
+    },
+  }
+}
+
 export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<Llm> {
+  if (options.pooled === false) {
+    return createStatelessLlm(options)
+  }
   const pool = new SessionPool({
     cwd: options.cwd,
     systemPrompt: options.systemPrompt,
     maxSessions: options.maxSessions ?? 8,
-    spawn: (opts) => ClaudeSession.spawn({ ...opts, cliCommand: options.cliCommand }),
+    spawn: (opts) => ClaudeSession.spawn({ ...opts, model: options.model, cliCommand: options.cliCommand }),
     loadSessionId,
     saveSessionId,
   })

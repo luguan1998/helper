@@ -9,3 +9,6 @@ export interface Llm {
    */
   ask(userId: string, content: UserContent): Promise<Reply>
 }
+
+/** 命名模型注册表:接力 pipeline 按名引用。 */
+export type Models = Record<string, Llm>
