@@ -18,7 +18,6 @@ import { loadLastMsgId, saveLastMsgId } from './state.js'
 const DEFAULT_POLL_MS = 1000
 const DEFAULT_MAX_SESSIONS = 8
 const SUMMARY_MAX = 100
-const DEFAULT_ACTIVATION_KEYWORD = '开启'
 const DEFAULT_EXIT_KEYWORDS = ['esc', 'quit', 'exit']
 
 export interface ReplyResult {
@@ -51,14 +50,12 @@ export interface AssistantOptions {
   startLoop?: boolean
   /** 监控的群 ID(零配置生产必填;可由 WELINK_GROUP_ID 提供)。 */
   groupId?: string
-  /** 注入带生命周期的对话模型 → 开启 @开启/exit 生命周期(测试/生产)。零配置自动取 models.text。 */
+  /** 注入带生命周期的对话模型 → 开启 @bot/exit 生命周期(测试/生产)。零配置自动取 models.text。 */
   sessionLlm?: SessionLlm
   /** 水位读取(默认 ()=>\"0\" → 全处理、不排除历史;生产注入 state.ts → 首次 undefined 排除历史)。 */
   loadWatermark?: () => Promise<string | undefined>
   /** 水位推进(默认 no-op;生产注入 state.ts 持久化)。 */
   saveWatermark?: (msgId: string) => Promise<void>
-  /** 激活关键词(默认 "开启");激活 = at(bot 被@) && 正文 trim 后以该词结尾。 */
-  activationKeyword?: string
   /** 退出关键词(默认 esc/quit/exit);退出 = 正文 trim+lowercase 后精确等于其一。 */
   exitKeywords?: string[]
   onReceive?: (msg: IncomingMessage) => void
@@ -80,7 +77,6 @@ interface AssistantDeps {
   sessionLlm?: SessionLlm
   loadWatermark?: () => Promise<string | undefined>
   saveWatermark?: (msgId: string) => Promise<void>
-  activationKeyword: string
   exitKeywords: string[]
   onReceive?: (msg: IncomingMessage) => void
   onReply?: (userId: string, result: ReplyResult) => void
@@ -155,7 +151,6 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
   const assistant = new Assistant({
     channel, models, pipeline, renderer, outputPolicy,
     sessionLlm, loadWatermark, saveWatermark,
-    activationKeyword: options.activationKeyword ?? DEFAULT_ACTIVATION_KEYWORD,
     exitKeywords: options.exitKeywords ?? DEFAULT_EXIT_KEYWORDS,
     onReceive: options.onReceive, onReply: options.onReply, onError: options.onError,
   })
@@ -185,7 +180,7 @@ class Assistant implements AssistantHandle {
   private watermarkLoaded = false
   private readonly loadWatermark: () => Promise<string | undefined>
   private readonly saveWatermark: (id: string) => Promise<void>
-  /** 已 @开启 的发送者集合(生命周期;仅 sessionLlm 注入时使用)。 */
+  /** 已开启会话的发送者集合(生命周期;仅 sessionLlm 注入时使用)。 */
   private readonly active = new Set<string>()
   private running = false
 
@@ -265,7 +260,13 @@ class Assistant implements AssistantHandle {
     }
   }
 
-  /** 生命周期路由。注入 sessionLlm → @开启/exit/活跃处理/非活跃忽略;否则每条新消息直接处理(旧行为)。 */
+  /**
+   * 生命周期路由。注入 sessionLlm:
+   *   未活跃 + @bot → 开启(回 ack)+ 把本条丢给 Claude 处理(一句话即开问答);
+   *   已活跃 → exit 结束 / 其余(含继续 @bot)直接处理;
+   *   未活跃 + 非@ → 忽略。
+   * 未注入 sessionLlm → 每条新消息直接处理(旧行为)。
+   */
   private async route(msg: IncomingMessage): Promise<void> {
     if (!this.deps.sessionLlm) {
       await this.handle(msg)
@@ -274,32 +275,28 @@ class Assistant implements AssistantHandle {
     const sender = msg.user
     const text = (msg.content ?? '').trim()
     const isExit = this.deps.exitKeywords.some(k => text.toLowerCase() === k)
-    const isActivation = !!msg.at && text.endsWith(this.deps.activationKeyword)
 
     if (this.active.has(sender)) {
+      // 已活跃:exit 结束,否则处理(含继续 @bot 的消息)
       if (isExit) {
         const id = await this.deps.sessionLlm.endSession(sender)
         this.active.delete(sender)
         const reply = `会话已结束${id ? `,会话 ID: ${id}` : ''}。`
         await this.deps.channel.sendText(sender, reply)
         this.deps.onReply?.(sender, { mode: 'text', reply })
-      } else if (isActivation) {
-        // 活跃中再"开启":拒绝,防止串(必须先 exit 才能开新一轮)。
-        const hint = '当前已有进行中的会话,请先发送 esc/quit/exit 结束后再开启新一轮。'
-        await this.deps.channel.sendText(sender, hint)
       } else {
         await this.handle(msg)
       }
-    } else {
-      if (isActivation) {
-        await this.deps.sessionLlm.startSession(sender)
-        this.active.add(sender)
-        const ack = '已开启会话,可直接提问;发送 esc/quit/exit 结束。'
-        await this.deps.channel.sendText(sender, ack)
-        this.deps.onReply?.(sender, { mode: 'text', reply: ack })
-      }
-      // 非活跃 + 非激活:忽略(不处理、不回复)
+    } else if (msg.at) {
+      // 未活跃 + @bot:开启 + 回 ack + 把本条丢给 Claude 处理
+      await this.deps.sessionLlm.startSession(sender)
+      this.active.add(sender)
+      const ack = '已开启会话,可直接提问;发送 esc/quit/exit 结束。'
+      await this.deps.channel.sendText(sender, ack)
+      this.deps.onReply?.(sender, { mode: 'text', reply: ack })
+      await this.handle(msg)
     }
+    // 未活跃 + 非@:忽略(不处理、不回复)
   }
 
   private async handle(msg: IncomingMessage): Promise<void> {

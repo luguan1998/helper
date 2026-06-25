@@ -105,8 +105,6 @@ export class ClaudeSession implements Session {
   private lineBuffer = ''
   private ready = false
   claudeSessionId?: string
-  private readyPromise: Promise<void>
-  private readyResolve!: () => void
 
   /** 当前待回复的 send:收集文本,遇 result 即 resolve。 */
   private pendingResolve?: (reply: Reply) => void
@@ -115,15 +113,18 @@ export class ClaudeSession implements Session {
 
   private constructor(proc: ChildProcess) {
     this.proc = proc
-    this.readyPromise = new Promise(resolve => { this.readyResolve = resolve })
     this.attach()
   }
 
-  /** 新建会话并等待 system/init 就绪。 */
+  /**
+   * 新建会话。不在此 await system/init:Claude(-p stream-json)只在收到 stdin 输入后才发 system,
+   * 而 send() 在 spawn 返回后才写输入 → 等 system 会死锁(实测:无输入时 Claude 10s 内不发任何输出)。
+   * 直接标 ready 返回;system(含 session_id)在首轮 send 后到达,onMessage 仍会捕获 session_id 供下次 --resume。
+   */
   static async spawn(opts: ClaudeSessionOpts): Promise<ClaudeSession> {
     const proc = spawnClaude(opts)
     const session = new ClaudeSession(proc)
-    await session.whenReady()
+    session.markReady()
     return session
   }
 
@@ -143,8 +144,10 @@ export class ClaudeSession implements Session {
     killAiProcess(this.proc)
   }
 
-  private whenReady(): Promise<void> {
-    return this.readyPromise
+  /** 立即标记就绪(不等 system):用于 spawn 直接返回,避开"等 system 才写输入"的死锁。 */
+  private markReady(): void {
+    if (this.ready) return
+    this.ready = true
   }
 
   /** stream-json 输入格式(参考 vibe-ide ai.ts:801;图片用 Anthropic 多模态内容块)。 */
@@ -204,8 +207,7 @@ export class ClaudeSession implements Session {
 
   private readyReject(err: Error): void {
     if (!this.ready) {
-      this.ready = true // 防止 whenReady 永久挂起
-      this.readyResolve()
+      this.ready = true
       console.error(`[claude] startup failed:`, err.message)
     }
   }
@@ -214,10 +216,7 @@ export class ClaudeSession implements Session {
     switch (msg.type) {
       case 'system': {
         if (msg.session_id) this.claudeSessionId = msg.session_id
-        if (!this.ready) {
-          this.ready = true
-          this.readyResolve()
-        }
+        if (!this.ready) this.ready = true
         break
       }
       case 'assistant': {
