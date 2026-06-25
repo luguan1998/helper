@@ -1,10 +1,15 @@
-// 入口 / 组合根:零配置 `runAssistant()` 接真实 link CLI + Claude + Puppeteer。
+// 入口 / 组合根:零配置 `runAssistant()` 接真实 welink-cli im 群 + Claude + Puppeteer。
 // 默认适配器在 assistant.ts 内懒加载,这里只负责启动与优雅退出。
 import { runAssistant } from './assistant.js'
 
 async function main(): Promise<void> {
-  console.log('[bot] 启动客服助手(零配置:link CLI + Claude + 截图)...')
-  const handle = await runAssistant()
+  const groupId = process.env.WELINK_GROUP_ID
+  if (!groupId) {
+    console.error('[bot] 缺少环境变量 WELINK_GROUP_ID(要监控的群 ID)')
+    process.exit(1)
+  }
+  console.log(`[bot] 启动客服助手(welink-cli im 群 ${groupId} + Claude + 截图 + 持久化水位/只触发一次)...`)
+  const handle = await runAssistant({ groupId })
 
   let stopping = false
   const shutdown = (sig: string): void => {

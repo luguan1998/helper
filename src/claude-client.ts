@@ -3,7 +3,7 @@
 // 权限交互、流式 token、文件变更、partial-messages——bot 只需"完整回复")。
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import type { Llm } from './llm.js'
+import type { Llm, SessionLlm } from './llm.js'
 import { SessionPool, type Session } from './session-pool.js'
 import { loadSessionId, saveSessionId } from './state.js'
 import type { Reply, UserContent } from './types.js'
@@ -297,10 +297,20 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
     loadSessionId,
     saveSessionId,
   })
-  const llm: Llm = {
+  const llm: SessionLlm = {
     async ask(userId: string, content: UserContent): Promise<Reply> {
       const session = await pool.acquire(userId)
       return session.send(content)
+    },
+    async startSession(userId: string): Promise<void> {
+      await pool.startFresh(userId)
+    },
+    async endSession(userId: string): Promise<string | undefined> {
+      const session = pool.release(userId)
+      if (!session) return undefined
+      const id = session.claudeSessionId
+      session.kill()
+      return id
     },
   }
   return llm

@@ -1,0 +1,5 @@
+# sim 运行时产物
+state.json
+state.json.lock
+state.json.*.tmp
+.selftest-*

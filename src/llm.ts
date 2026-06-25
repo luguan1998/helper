@@ -10,5 +10,16 @@ export interface Llm {
   ask(userId: string, content: UserContent): Promise<Reply>
 }
 
+/**
+ * 带会话生命周期的 Llm(对话型模型)。核心用它驱动 @开启 / esc-quit-exit 生命周期。
+ * 识图等无状态模型不实现此接口(每次 ask 即 spawn→ask→kill,无生命周期)。
+ */
+export interface SessionLlm extends Llm {
+  /** 为该用户新建一个会话(不续接历史);若已存在活跃会话则先结束旧的。 */
+  startSession(userId: string): Promise<void>
+  /** 结束该用户会话并返回 claudeSessionId(发到群里作 resume 句柄);无活跃会话返回 undefined。 */
+  endSession(userId: string): Promise<string | undefined>
+}
+
 /** 命名模型注册表:接力 pipeline 按名引用。 */
 export type Models = Record<string, Llm>

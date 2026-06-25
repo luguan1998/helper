@@ -11,9 +11,9 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sim:gui": "node sim/gui/server.mjs",
+    "sim:bot": "node sim/run-bot.mjs"
   },
   "dependencies": {
     "highlight.js": "^11.10.0",
@@ -24,7 +24,6 @@
   "devDependencies": {
     "@types/node": "^22.9.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3",
-    "vitest": "^2.1.5"
+    "typescript": "^5.6.3"
   }
 }

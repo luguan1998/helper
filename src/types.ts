@@ -1,17 +1,20 @@
 // 领域类型(纯数据,无运行时依赖)。
 
-/** 来自通讯软件(link get)的一条原始消息。 */
+/** 来自通讯软件(welink-cli im query-history-message)的一条群消息。 */
 export interface IncomingMessage {
+  /** msgId(welink 大整数 >2^53,以 string 携带保精度,用 BigInt 比较)。 */
   id: string
   type: 'text' | 'picture'
-  /** 发送者标识(link send --user 用它)。 */
+  /** 发送者 w3 账号(会话隔离 key;群回复固定发群,不用它寻址)。 */
   user: string
   /** text 消息内容。 */
   content?: string
   /** picture 消息的图片 URL / 路径。 */
   pictureUrl?: string
-  /** 毫秒时间戳。 */
+  /** 毫秒时间戳(serverSendTime)。 */
   timestamp: number
+  /** 该消息是否 @ 了 bot(当前登录用户)。激活信号:"@助手 开启"。 */
+  at?: boolean
 }
 
 /**

@@ -57,6 +57,41 @@ export class SessionPool {
     return session
   }
 
+  /**
+   * 为该用户新建会话(**不续接历史**):先清掉旧活跃会话,再不带 resumeId spawn,
+   * 入池 + 持久化新 id + 淘汰。供 @开启 用(用户要求每次开启都是全新会话)。
+   */
+  async startFresh(userId: string): Promise<Session> {
+    const existing = this.live.get(userId)
+    if (existing) {
+      this.live.delete(userId)
+      existing.kill()
+    }
+    const session = await this.deps.spawn({
+      cwd: this.deps.cwd,
+      systemPrompt: this.deps.systemPrompt,
+      // 故意不传 resumeId:每次开启都是全新会话,不续接
+    })
+    if (session.claudeSessionId) {
+      await this.saveSessionId(userId, session.claudeSessionId)
+    }
+    this.live.set(userId, session)
+    this.evictIfNeeded()
+    return session
+  }
+
+  /** 移出该用户的活跃会话(不 kill,调用方取 claudeSessionId 后自行 kill)。无则 undefined。 */
+  release(userId: string): Session | undefined {
+    const session = this.live.get(userId)
+    if (session) this.live.delete(userId)
+    return session
+  }
+
+  /** 该用户是否在池中有活跃会话。 */
+  has(userId: string): boolean {
+    return this.live.has(userId)
+  }
+
   /** 关闭并清空所有活跃会话(进程退出时调用)。 */
   stopAll(): void {
     for (const s of this.live.values()) s.kill()
