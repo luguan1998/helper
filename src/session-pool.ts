@@ -9,6 +9,8 @@ export interface Session {
   send(content: UserContent): Promise<Reply>
   /** 关闭会话子进程(LRU 淘汰/停止时调用)。 */
   kill(): void
+  /** 运行期切模型(经 set_model control_request);无状态会话可不实现。 */
+  setModel?(model: string): void
   /** Claude 分配的会话 ID(用于持久化 + 下次 --resume)。 */
   claudeSessionId?: string
 }
@@ -85,6 +87,18 @@ export class SessionPool {
     const session = this.live.get(userId)
     if (session) this.live.delete(userId)
     return session
+  }
+
+  /**
+   * 运行期切该用户当前活跃会话的模型(经 set_model control_request)。
+   * 无活跃会话(已退出/未开启)或会话不支持 setModel 时返 false;有则委托并返 true。
+   * 供 @bot <alias> 开启时切模型:startSession 后立即调用,命中刚入池的新会话。
+   */
+  setModel(userId: string, model: string): boolean {
+    const session = this.live.get(userId)
+    if (!session?.setModel) return false
+    session.setModel(model)
+    return true
   }
 
   /** 该用户是否在池中有活跃会话。 */

@@ -48,10 +48,10 @@ npm run sim:bot
 
 **群消息监控 + 按发送者生命周期**(`src/assistant.ts` + `src/state.ts` + `SessionLlm`):
 - **只触发一次(水位去重)**:每条消息**处理前**先把水位(最后处理 msgId)推进并持久化到 `state.ts`(`lastMsgIds[groupId]`),再处理 → 崩溃至多重丢"正在处理的那一条",绝不重复处理(at-most-once,用户取舍:宁可丢也不重发)。首次运行(无水位)落种到本批最新 msgId、不处理 → **排除历史**。msgId 是 >2^53 的大整数,`welink-channel.ts` parse 前正则引号化成 string,核心用 `BigInt` 比较(非数值 id 回退字符串比较)。
-- **按发送者生命周期**(注入 `sessionLlm` 时生效;零配置自动取 `models.text`):`@bot 开启`(消息 `at===true` 且正文 trim 后以"开启"结尾)→ `startSession` 新建会话(**不续接**);活跃期间该发送者普通消息直接处理;`esc/quit/exit` → `endSession` 取 claudeSessionId 发到群里(作 resume 句柄)并结束;非活跃发送者消息忽略;活跃中再"开启"被拒,退出后才可开新一轮(防"串")。`SessionLlm`(`src/llm.ts`)= `Llm + startSession/endSession`;`SessionPool` 增 `startFresh`(不带 resumeId)/`release`/`has`。
+- **按发送者生命周期**(注入 `sessionLlm` 时生效;零配置自动取 `models.text`):`@bot 开启`(消息 `at===true` 且正文 trim 后以"开启"结尾)→ `startSession` 新建会话(**不续接**);活跃期间该发送者普通消息直接处理;`esc/quit/exit` → `endSession` 取 claudeSessionId 发到群里(作 resume 句柄)并结束;非活跃发送者消息忽略;活跃中再"开启"被拒,退出后才可开新一轮(防"串")。**模型别名**:`@bot <alias>`(`haiku`/`sonnet`/`opus`/`fable`,首个匹配的空白分隔 token、大小写不敏感)在开启时经 `set_model` control_request(stream-json stdin,参考 vibe-ide `ai.ts`)切该会话模型,别名从正文剥离后剩余为空或仅剩 @提及则只 ack 不送 Claude;输错走默认,不影响开启。`SessionLlm`(`src/llm.ts`)= `Llm + startSession/endSession/setModel`;`SessionPool` 增 `startFresh`(不带 resumeId)/`release`/`has`/`setModel`。
 - 水位与生命周期均**可注入、默认退化到"全处理、无生命周期"**(`loadWatermark` 默认 `()=>"0"` 全处理、`sessionLlm` 默认 undefined 每条都处理),便于手动驱动/集成。零配置 `runAssistant({groupId})` 才启用全生产行为(welink 通道 + state.ts 水位 + 生命周期)。
 
-**Claude 子进程管理**(`src/claude-client.ts`):精简自兄弟项目 `D:\test\vibe-ide\src\main\ai.ts`(去掉 Electron IPC / 权限交互 / 流式 token / partial-messages),只收集最终 assistant 文本、遇 `result` 即 resolve。复用其 `findBinary`/`sanitizeEnvForCli`/`buildClaudeArgs`/`spawnClaude`/NDJSON 行缓冲解析/`killAiProcess`(Windows `taskkill /f /t` 杀进程树)。`ClaudeSession` 公开面仅 `spawn/send/kill`。
+**Claude 子进程管理**(`src/claude-client.ts`):精简自兄弟项目 `D:\test\vibe-ide\src\main\ai.ts`(去掉 Electron IPC / 权限交互 / 流式 token / partial-messages),只收集最终 assistant 文本、遇 `result` 即 resolve。复用其 `findBinary`/`sanitizeEnvForCli`/`buildClaudeArgs`/`spawnClaude`/NDJSON 行缓冲解析/`killAiProcess`(Windows `taskkill /f /t` 杀进程树)。`ClaudeSession` 公开面 `spawn/send/kill/setModel`(`setModel` 经 `set_model` control_request 运行期切模型,精简自 vibe-ide `ai.ts` 的 `AI_SET_MODEL`)。
 
 ## 环境与约束
 

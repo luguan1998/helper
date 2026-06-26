@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>客服助手 Bot 架构</title>
+<style>
+  body{margin:0;background:#fafafa;font-family:"Microsoft YaHei","Segoe UI",Arial,sans-serif}
+  svg{display:block;margin:12px auto}
+  .t{fill:#1a1a1a}
+  .sub{fill:#555}
+</style>
+</head>
+<body>
+<svg viewBox="0 0 1080 780" width="1080" height="780" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,5 L0,10 z" fill="#666"/>
+    </marker>
+  </defs>
+
+  <!-- 标题 -->
+  <text x="540" y="30" text-anchor="middle" font-size="17" font-weight="700" class="t">客服助手 Bot — 深模块 + 3 接缝 + 接力 pipeline</text>
+
+  <!-- ===== 主循环行 ===== -->
+  <!-- welink 群 -->
+  <rect x="20" y="80" width="150" height="74" rx="6" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="95" y="108" text-anchor="middle" font-size="12" font-weight="700" class="t">welink-cli IM 群</text>
+  <text x="95" y="126" text-anchor="middle" font-size="10" class="sub">text · picture · file · card</text>
+  <text x="95" y="140" text-anchor="middle" font-size="10" class="sub">不支持 Markdown / 流式</text>
+
+  <line x1="170" y1="117" x2="198" y2="117" stroke="#666" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- welink-channel 适配器 -->
+  <rect x="200" y="80" width="180" height="74" rx="6" fill="#e3f3e6" stroke="#2e8b57"/>
+  <text x="290" y="108" text-anchor="middle" font-size="12" font-weight="700" class="t">welink-channel.ts</text>
+  <text x="290" y="126" text-anchor="middle" font-size="10" class="sub">Channel 适配器</text>
+  <text x="290" y="140" text-anchor="middle" font-size="10" class="sub">getNewMessages / send*</text>
+
+  <line x1="380" y1="117" x2="408" y2="117" stroke="#666" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- Assistant 深模块大框 -->
+  <rect x="410" y="70" width="440" height="320" rx="8" fill="#fff0e0" stroke="#d97706" stroke-width="1.6"/>
+  <text x="630" y="94" text-anchor="middle" font-size="14" font-weight="700" class="t">Assistant  (src/assistant.ts)</text>
+  <text x="630" y="111" text-anchor="middle" font-size="10" class="sub">深模块 · 纯编排 · 无 I/O · 每条 try/catch 不死循环</text>
+
+  <!-- 子步骤 -->
+  <rect x="430" y="128" width="400" height="42" rx="5" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="630" y="154" text-anchor="middle" font-size="12" class="t">① 水位去重(at-most-once)— state.ts lastMsgIds,先推进再处理</text>
+
+  <rect x="430" y="178" width="400" height="42" rx="5" fill="#f0e6f6" stroke="#7a4ea8"/>
+  <text x="630" y="204" text-anchor="middle" font-size="12" class="t">② 生命周期路由 — @开启/exit · SessionPool(按发送者)</text>
+
+  <rect x="430" y="228" width="400" height="42" rx="5" fill="#fffbe6" stroke="#b08800"/>
+  <text x="630" y="254" text-anchor="middle" font-size="12" class="t">③ runPipeline — pipeline.ts + pipelines/default.ts</text>
+
+  <rect x="430" y="278" width="400" height="42" rx="5" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="630" y="304" text-anchor="middle" font-size="12" class="t">④ outputPolicy — output-policy.ts · isMarkdown 决定 text/picture/html</text>
+
+  <text x="630" y="345" text-anchor="middle" font-size="10" class="sub">核心可注入假驱动:startLoop:false + 注入 channel/llm/renderer/水位/sessionLlm</text>
+  <text x="630" y="362" text-anchor="middle" font-size="10" class="sub">零配置 runAssistant({groupId}) 才懒加载全生产适配器</text>
+
+  <line x1="850" y1="299" x2="878" y2="299" stroke="#666" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- 输出 -->
+  <rect x="880" y="262" width="180" height="74" rx="6" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="970" y="288" text-anchor="middle" font-size="12" font-weight="700" class="t">发回群</text>
+  <text x="970" y="306" text-anchor="middle" font-size="10" class="sub">sendText</text>
+  <text x="970" y="320" text-anchor="middle" font-size="10" class="sub">sendPicture / sendFile</text>
+
+  <!-- ===== 三接缝 ===== -->
+  <text x="540" y="424" text-anchor="middle" font-size="13" font-weight="700" class="t">三个接缝(端口 + 生产适配器,分文件;接口 import type)</text>
+
+  <!-- Channel 列 -->
+  <rect x="70" y="442" width="280" height="44" rx="5" fill="#e6f0fa" stroke="#2f6fb0"/>
+  <text x="210" y="469" text-anchor="middle" font-size="12" font-weight="700" class="t">Channel (port) — channel.ts</text>
+  <rect x="70" y="490" width="280" height="44" rx="5" fill="#e3f3e6" stroke="#2e8b57"/>
+  <text x="210" y="517" text-anchor="middle" font-size="12" class="t">welink-channel.ts</text>
+  <line x1="210" y1="486" x2="210" y2="490" stroke="#666" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- Llm 列 -->
+  <rect x="400" y="442" width="280" height="44" rx="5" fill="#e6f0fa" stroke="#2f6fb0"/>
+  <text x="540" y="469" text-anchor="middle" font-size="12" font-weight="700" class="t">Llm (port) — llm.ts</text>
+  <rect x="400" y="490" width="280" height="44" rx="5" fill="#e3f3e6" stroke="#2e8b57"/>
+  <text x="540" y="517" text-anchor="middle" font-size="12" class="t">claude-client.ts(Claude CLI 子进程)</text>
+  <line x1="540" y1="486" x2="540" y2="490" stroke="#666" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- Renderer 列 -->
+  <rect x="730" y="442" width="280" height="44" rx="5" fill="#e6f0fa" stroke="#2f6fb0"/>
+  <text x="870" y="469" text-anchor="middle" font-size="12" font-weight="700" class="t">Renderer (port) — renderer.ts</text>
+  <rect x="730" y="490" width="280" height="44" rx="5" fill="#e3f3e6" stroke="#2e8b57"/>
+  <text x="870" y="517" text-anchor="middle" font-size="12" class="t">puppeteer-renderer.ts</text>
+  <line x1="870" y1="486" x2="870" y2="490" stroke="#666" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- ===== pipeline 接力 ===== -->
+  <text x="540" y="572" text-anchor="middle" font-size="13" font-weight="700" class="t">默认 pipeline 接力(models.ts 命名注册表;modelStep 写 ctx.reply,scriptStep 纯变换)</text>
+
+  <!-- 行1:图片 -->
+  <rect x="20" y="588" width="110" height="40" rx="5" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="75" y="613" text-anchor="middle" font-size="11" class="t">图片消息</text>
+  <line x1="130" y1="608" x2="158" y2="608" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="160" y="588" width="190" height="40" rx="5" fill="#fffbe6" stroke="#b08800"/>
+  <text x="255" y="613" text-anchor="middle" font-size="11" class="t">vision 识图(描述存 scratch)</text>
+  <line x1="350" y1="608" x2="378" y2="608" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="380" y="588" width="150" height="40" rx="5" fill="#f0e6f6" stroke="#7a4ea8"/>
+  <text x="455" y="613" text-anchor="middle" font-size="11" class="t">脚本组装成文本</text>
+  <line x1="530" y1="608" x2="558" y2="608" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="560" y="588" width="150" height="40" rx="5" fill="#fffbe6" stroke="#b08800"/>
+  <text x="635" y="613" text-anchor="middle" font-size="11" class="t">text 分析</text>
+  <line x1="710" y1="608" x2="738" y2="608" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="740" y="588" width="110" height="40" rx="5" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="795" y="613" text-anchor="middle" font-size="11" class="t">ctx.reply</text>
+
+  <!-- 行2:文本 -->
+  <rect x="20" y="638" width="110" height="40" rx="5" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="75" y="663" text-anchor="middle" font-size="11" class="t">文本消息</text>
+  <line x1="130" y1="658" x2="158" y2="658" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="160" y="638" width="550" height="40" rx="5" fill="#fffbe6" stroke="#b08800"/>
+  <text x="435" y="663" text-anchor="middle" font-size="11" class="t">text 分析(直接走)</text>
+  <line x1="710" y1="658" x2="738" y2="658" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="740" y="638" width="110" height="40" rx="5" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="795" y="663" text-anchor="middle" font-size="11" class="t">ctx.reply</text>
+
+  <!-- 输出形态 -->
+  <rect x="880" y="588" width="180" height="90" rx="6" fill="#e8e8ec" stroke="#6b6b76"/>
+  <text x="970" y="610" text-anchor="middle" font-size="11" font-weight="700" class="t">输出形态(可配置)</text>
+  <text x="970" y="628" text-anchor="middle" font-size="10" class="sub">text — 纯文本直发</text>
+  <text x="970" y="643" text-anchor="middle" font-size="10" class="sub">picture — 截图发送</text>
+  <text x="970" y="658" text-anchor="middle" font-size="10" class="sub">html — 发 HTML 文件</text>
+  <text x="970" y="672" text-anchor="middle" font-size="9" class="sub">BOT_PICTURE_OUTPUT</text>
+
+  <!-- ===== 持久化 / 会话 ===== -->
+  <rect x="20" y="700" width="1040" height="64" rx="6" fill="#f4f4f8" stroke="#8a8a93" stroke-dasharray="4 3"/>
+  <text x="540" y="722" text-anchor="middle" font-size="11" class="t">持久化:state.ts(~/.claude-bot/state.json,可用 BOT_STATE_DIR 覆盖)— 水位 lastMsgIds + 每用户 claudeSessionId</text>
+  <text x="540" y="742" text-anchor="middle" font-size="11" class="t">会话隔离:SessionPool.ts(Map&lt;userId,Session&gt; + LRU + --resume);按发送者生命周期(@开启新建不续接 / exit 发 resume 句柄回群)</text>
+  <text x="540" y="760" text-anchor="middle" font-size="10" class="sub">模型切换经 env ANTHROPIC_MODEL · Claude 工作目录 workspace/ · bypassPermissions 全自动</text>
+</svg>
+</body>
+</html>

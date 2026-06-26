@@ -19,6 +19,8 @@ export interface SessionLlm extends Llm {
   startSession(userId: string): Promise<void>
   /** 结束该用户会话并返回 claudeSessionId(发到群里作 resume 句柄);无活跃会话返回 undefined。 */
   endSession(userId: string): Promise<string | undefined>
+  /** 运行期切该用户当前活跃会话的模型(经 set_model control_request,参考 vibe-ide ai.ts);无活跃会话返 false。 */
+  setModel(userId: string, model: string): Promise<boolean>
 }
 
 /** 命名模型注册表:接力 pipeline 按名引用。 */

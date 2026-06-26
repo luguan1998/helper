@@ -20,6 +20,24 @@ const DEFAULT_MAX_SESSIONS = 8
 const SUMMARY_MAX = 100
 const DEFAULT_EXIT_KEYWORDS = ['esc', 'quit', 'exit']
 
+/** @bot 开启时可指定的模型别名;CLI 经 ANTHROPIC_DEFAULT_*_MODEL 解析(参考 vibe-ide ai.ts:861)。 */
+const MODEL_ALIASES = ['haiku', 'sonnet', 'opus', 'fable'] as const
+
+/**
+ * 从开启消息正文里解析模型别名:找首个等于某别名的空白分隔 token(大小写不敏感)。
+ * 返回 {alias(小写), rest=去掉该 token 后的正文};无别名返 null。rest 保留 @提及与其余正文。
+ */
+function parseModelAlias(text: string): { alias: string; rest: string } | null {
+  const tokens = text.split(/\s+/).filter(Boolean)
+  for (let i = 0; i < tokens.length; i++) {
+    const lower = tokens[i].toLowerCase()
+    if ((MODEL_ALIASES as readonly string[]).includes(lower)) {
+      return { alias: lower, rest: tokens.filter((_, j) => j !== i).join(' ') }
+    }
+  }
+  return null
+}
+
 export interface ReplyResult {
   mode: OutputMode
   reply: string
@@ -298,12 +316,25 @@ class Assistant implements AssistantHandle {
         await this.handle(msg)
       }
     } else if (msg.at) {
-      // 未活跃 + @bot:开启 + 回 ack + 把本条丢给 Claude 处理
+      // 未活跃 + @bot:开启 + 回 ack + (若带模型别名)切模型 + 把本条(剥别名后)丢给 Claude 处理
       await this.deps.sessionLlm.startSession(sender)
       this.active.add(sender)
-      const ack = '已开启会话,可直接提问;发送 esc/quit/exit 结束。'
+      const parsed = parseModelAlias(text)
+      let ack: string
+      if (parsed) {
+        const ok = await this.deps.sessionLlm.setModel(sender, parsed.alias)
+        if (!ok) console.warn(`[assistant] setModel(${parsed.alias}) 未命中活跃会话:`, sender)
+        ack = `已开启会话(${parsed.alias}),可直接提问;发送 esc/quit/exit 结束。`
+      } else {
+        ack = '已开启会话,可直接提问;发送 esc/quit/exit 结束。'
+      }
       await this.deps.channel.sendText(sender, ack)
       this.deps.onReply?.(sender, { mode: 'text', reply: ack })
+      // 剥别名后空或仅剩 @提及 → 文本消息只 ack 不送 Claude;图片仍处理(图像本身即载荷)
+      const rest = parsed?.rest ?? text
+      const onlyMention = rest === '' || /^@\S+$/.test(rest)
+      if (msg.type === 'text' && onlyMention) return
+      if (parsed) msg.content = parsed.rest
       await this.handle(msg)
     }
     // 未活跃 + 非@:忽略(不处理、不回复)

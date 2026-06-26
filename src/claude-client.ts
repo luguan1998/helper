@@ -2,6 +2,7 @@
 // spawn/NDJSON 解析/环境清洗/进程树杀,精简自 vibe-ide src/main/ai.ts(去掉 Electron IPC、
 // 权限交互、流式 token、文件变更、partial-messages——bot 只需"完整回复")。
 import { spawn, execSync, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Llm, SessionLlm } from './llm.js'
 import { SessionPool, type Session } from './session-pool.js'
@@ -142,6 +143,20 @@ export class ClaudeSession implements Session {
 
   kill(): void {
     killAiProcess(this.proc)
+  }
+
+  /**
+   * 运行期切模型(参考 vibe-ide src/main/ai.ts:860-883):向 stdin 写一行 set_model control_request,
+   * fire-and-forget。CLI 经 ANTHROPIC_DEFAULT_*_MODEL 解析 opus/sonnet/haiku 等别名。
+   * 回执(control_response 等)走 onMessage 的 default 分支被忽略,不干扰 send() 的 result 等待。
+   */
+  setModel(model: string): void {
+    const ndjson = JSON.stringify({
+      type: 'control_request',
+      request_id: `set-model-${randomUUID()}`,
+      request: { subtype: 'set_model', model },
+    }) + '\n'
+    this.proc.stdin?.write(ndjson)
   }
 
   /** 立即标记就绪(不等 system):用于 spawn 直接返回,避开"等 system 才写输入"的死锁。 */
@@ -310,6 +325,9 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
       const id = session.claudeSessionId
       session.kill()
       return id
+    },
+    async setModel(userId: string, model: string): Promise<boolean> {
+      return pool.setModel(userId, model)
     },
   }
   return llm
