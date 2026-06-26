@@ -25,6 +25,8 @@ export interface ReplyResult {
   reply: string
   /** picture 模式下的截图路径。 */
   imagePath?: string
+  /** html 模式下的 HTML 文件路径。 */
+  htmlPath?: string
 }
 
 export interface AssistantOptions {
@@ -43,6 +45,8 @@ export interface AssistantOptions {
   renderer?: Renderer
   /** 注入输出策略(测试)。默认 markdownOutputPolicy(Markdown→picture,纯文本→text)。 */
   outputPolicy?: OutputPolicy
+  /** 富文本回复的产物形态:'image'(默认,截图 PNG)|'html'(发 HTML 文件)。可由 env BOT_PICTURE_OUTPUT 覆盖。 */
+  pictureOutput?: 'image' | 'html'
   pollIntervalMs?: number
   maxSessions?: number
   cliCommand?: string
@@ -98,11 +102,11 @@ function cmpId(a: string, b: string): number {
   }
 }
 
-/** 把完整 Markdown 压成短摘要(去代码块、限长),作为截图前缀文本通知。 */
-function summarize(markdown: string): string {
+/** 把完整 Markdown 压成短摘要(去代码块、限长),作为附件前缀文本通知。where=图片|文件。 */
+function summarize(markdown: string, where: string): string {
   const stripped = markdown.replace(/```[\s\S]*?```/g, '[代码块]').replace(/\s+/g, ' ').trim()
   const over = stripped.length > SUMMARY_MAX
-  return `🤖 ${stripped.slice(0, SUMMARY_MAX)}${over ? '…' : ''}(查看图片获取完整内容)`
+  return `🤖 ${stripped.slice(0, SUMMARY_MAX)}${over ? '…' : ''}(查看${where}获取完整内容)`
 }
 
 /**
@@ -111,7 +115,13 @@ function summarize(markdown: string): string {
  * 默认适配器懒加载——注入假时绝不加载 puppeteer / child_process / welink-cli。
  */
 export async function runAssistant(options: AssistantOptions = {}): Promise<AssistantHandle> {
-  const outputPolicy = options.outputPolicy ?? markdownOutputPolicy
+  // pictureOutput='html' 时把默认策略的 picture 重映射成 html(发 HTML 文件而非截图);
+  // text/html 原样透传——与注入的自定义 outputPolicy 组合安全(自定义策略仍可直接返回 'html')。
+  const pictureOutput = options.pictureOutput ?? process.env.BOT_PICTURE_OUTPUT ?? 'image'
+  const basePolicy = options.outputPolicy ?? markdownOutputPolicy
+  const outputPolicy: OutputPolicy = pictureOutput === 'html'
+    ? (reply) => { const m = basePolicy(reply); return m === 'picture' ? 'html' : m }
+    : basePolicy
 
   let models: Models
   let pipeline: Pipeline
@@ -308,9 +318,14 @@ class Assistant implements AssistantHandle {
       const mode = this.deps.outputPolicy(reply)
       if (mode === 'picture') {
         const imagePath = await this.deps.renderer.markdownToImage(reply)
-        await this.deps.channel.sendText(msg.user, summarize(reply))
+        await this.deps.channel.sendText(msg.user, summarize(reply, '图片'))
         await this.deps.channel.sendPicture(msg.user, imagePath)
         this.deps.onReply?.(msg.user, { mode, reply, imagePath })
+      } else if (mode === 'html') {
+        const htmlPath = await this.deps.renderer.markdownToHtml(reply)
+        await this.deps.channel.sendText(msg.user, summarize(reply, '文件'))
+        await this.deps.channel.sendFile(msg.user, htmlPath)
+        this.deps.onReply?.(msg.user, { mode, reply, htmlPath })
       } else {
         await this.deps.channel.sendText(msg.user, reply)
         this.deps.onReply?.(msg.user, { mode, reply })

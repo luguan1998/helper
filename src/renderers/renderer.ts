@@ -4,4 +4,6 @@
 export interface Renderer {
   /** 把 Markdown 渲染成 PNG,返回本地文件路径。 */
   markdownToImage(markdown: string): Promise<string>
+  /** 把 Markdown 渲染成完整 HTML 文件(自包含样式),返回本地路径。不开浏览器。 */
+  markdownToHtml(markdown: string): Promise<string>
 }

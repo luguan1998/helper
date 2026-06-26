@@ -28,6 +28,7 @@ const MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
   '.pdf': 'application/pdf', '.txt': 'text/plain', '.json': 'application/json',
+  '.html': 'text/html; charset=utf-8',
 }
 
 // ─── 调 sim CLI 子进程(忠实测试 CLI 的 send/query) ─────────────────────────

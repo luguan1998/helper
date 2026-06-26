@@ -3,6 +3,7 @@
 import puppeteer from 'puppeteer-core'
 import type { Browser } from 'puppeteer-core'
 import { existsSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -65,6 +66,13 @@ export function createPuppeteerRenderer(options: PuppeteerRendererOptions = {}):
       } finally {
         await page.close()
       }
+    },
+    async markdownToHtml(markdown: string): Promise<string> {
+      // 不开浏览器:buildHtml 已是自包含样式文档,直接落盘成 .html 文件供发群。
+      const html = buildHtml(markdown)
+      const dest = join(tmpdir(), `ai-response-${randomBytes(6).toString('hex')}.html`)
+      await writeFile(dest, html, 'utf8')
+      return dest
     },
   }
 }

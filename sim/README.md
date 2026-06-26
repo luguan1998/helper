@@ -63,7 +63,7 @@ node sim/welink-cli.mjs im send-to-group --group-id 100001 --sender user01 --fil
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `WELINK_SIM_STATE` | `sim/state.json` | 共享状态文件 |
-| `WELINK_SIM_ACCOUNT` | `bot01` | 默认发送者/bot 账号 |
+| `WELINK_SIM_ACCOUNT` | `bot01` | 默认发送者/bot 账号;未设时回落到 `WELINK_ACCOUNT`(驱动 sim @-检测与 bot sender) |
 | `SIM_BASE_URL` | `http://localhost:3000` | 图片信封 URL 前缀;**须指向 sim:gui 的地址**(GUI 改 `PORT` 时同步改此,或 GUI 未设时自动对齐自身 `PORT`) |
 | `SIM_MSG_ID_BASE` | `1000` | msgId 计数基数 |
 | `PORT` | `3000` | GUI 服务端口 |
@@ -72,7 +72,7 @@ node sim/welink-cli.mjs im send-to-group --group-id 100001 --sender user01 --fil
 | `WELINK_CLI_BIN` | `welink-cli` | bot 适配器调用的二进制(sim 时为 `node`) |
 | `WELINK_CLI_SCRIPT` | (无) | bot 适配器 args 前缀(sim 时为 `welink-cli.mjs` 路径) |
 | `WELINK_GROUP_ID` | (必填) | bot 轮询/发送的群 |
-| `WELINK_ACCOUNT` | `bot01` | bot 自身账号(过滤自身消息) |
+| `WELINK_ACCOUNT` | `bot01` | bot 自身账号(过滤自身消息);sim 下也作 `WELINK_SIM_ACCOUNT` 的回落源 |
 | `WELINK_QUERY_COUNT` | `20` | bot 单次拉取条数 |
 
 ## 安全模型

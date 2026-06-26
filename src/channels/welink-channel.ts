@@ -181,5 +181,10 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
       const stdout = await runIm('send-to-group', '--group-id', groupId, '--image', imagePath)
       parseEnvelope(stdout)
     },
+    /** 发文件到群。 */
+    async sendFile(_userId: string, filePath: string): Promise<void> {
+      const stdout = await runIm('send-to-group', '--group-id', groupId, '--file', filePath)
+      parseEnvelope(stdout)
+    },
   }
 }

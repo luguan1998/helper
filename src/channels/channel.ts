@@ -11,4 +11,6 @@ export interface Channel {
   sendText(userId: string, text: string): Promise<void>
   /** 发图片到群(welink-cli im send-to-group --image)。userId=发送者(群模型下被适配器忽略)。 */
   sendPicture(userId: string, imagePath: string): Promise<void>
+  /** 发文件到群(welink-cli im send-to-group --file)。userId=发送者(群模型下被适配器忽略)。 */
+  sendFile(userId: string, filePath: string): Promise<void>
 }

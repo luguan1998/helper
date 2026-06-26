@@ -40,7 +40,7 @@ export async function buildModels(specs: ModelSpec[], shared: ModelsShared): Pro
 export const DEFAULT_TEXT_PROMPT = [
   '你是一个内部通讯软件上的客服助手。',
   '请简洁、专业、礼貌地回答用户问题,使用与用户相同的语言。',
-  '约束:不要做出任何承诺或保证;不要披露内部敏感信息、密钥、口令;',
+  // '约束:不要做出任何承诺或保证;不要披露内部敏感信息、密钥、口令;',
   '遇到无法确定或超出权限的问题,提示用户联系人工客服。',
   '回复使用 Markdown(将渲染为图片发送)。',
 ].join('')
