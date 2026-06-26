@@ -112,6 +112,11 @@ export class ClaudeSession implements Session {
   /** 该会话拥有的工作目录(退出后空则回收);无状态识图不设。 */
   private readonly ownedWorkspacePath?: string
 
+  /** 该会话拥有的 workspace 子目录路径(供会话预处理脚本写产物;无状态会话 undefined)。 */
+  get workspacePath(): string | undefined {
+    return this.ownedWorkspacePath
+  }
+
   /** 当前待回复的 send:收集文本,遇 result 即 resolve。 */
   private pendingResolve?: (reply: Reply) => void
   private pendingReject?: (err: Error) => void
@@ -349,6 +354,9 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
     },
     async setModel(userId: string, model: string): Promise<boolean> {
       return pool.setModel(userId, model)
+    },
+    getWorkspacePath(userId: string): string | undefined {
+      return pool.getWorkspacePath(userId)
     },
   }
   return llm

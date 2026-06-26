@@ -13,6 +13,7 @@ import { markdownOutputPolicy } from './output-policy.js'
 import type { ModelSpec } from './models.js'
 import { buildModels, DEFAULT_MODEL_SPECS } from './models.js'
 import { createDefaultPipeline } from './pipelines/default.js'
+import { createLogQaPipeline } from './pipelines/log-qa.js'
 import { loadLastMsgId, saveLastMsgId } from './state.js'
 
 const DEFAULT_POLL_MS = 1000
@@ -148,7 +149,7 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
 
   if (options.models) {
     models = options.models
-    pipeline = options.pipeline ?? createDefaultPipeline()
+    pipeline = pickDefaultPipeline(options, models)
   } else if (options.llm) {
     // 旧用法:单 Llm → 平凡 pipeline(无接力,直接单模型)
     models = { default: options.llm }
@@ -157,7 +158,7 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
     // 零配置:默认 vision+text + 接力 pipeline + 生命周期(text 模型)
     const specs = buildDefaultSpecs(options)
     models = await buildModels(specs, { cwd: options.claudeCwd ?? 'workspace', cliCommand: options.cliCommand })
-    pipeline = options.pipeline ?? createDefaultPipeline()
+    pipeline = pickDefaultPipeline(options, models)
     sessionLlm = options.sessionLlm ?? (models.text as SessionLlm | undefined)
   }
 
@@ -202,6 +203,16 @@ function buildDefaultSpecs(options: AssistantOptions): ModelSpec[] {
   })
 }
 
+/**
+ * 选 pipeline:options.pipeline 优先;env BOT_PIPELINE=log-qa 时用日志问答 pipeline(需 models.text);
+ * 否则默认接力 pipeline。日志场景零配置即:`BOT_PIPELINE=log-qa npm run dev`。
+ */
+function pickDefaultPipeline(options: AssistantOptions, models: Models): Pipeline {
+  if (options.pipeline) return options.pipeline
+  if (process.env.BOT_PIPELINE === 'log-qa' && models.text) return createLogQaPipeline()
+  return createDefaultPipeline()
+}
+
 class Assistant implements AssistantHandle {
   /** 最后处理到的 msgId(水位);undefined=尚未载入(或生产首次,排除历史)。 */
   private watermark: string | undefined
@@ -210,6 +221,8 @@ class Assistant implements AssistantHandle {
   private readonly saveWatermark: (id: string) => Promise<void>
   /** 已开启会话的发送者集合(生命周期;仅 sessionLlm 注入时使用)。 */
   private readonly active = new Set<string>()
+  /** 会话级上下文(跨消息保留):预处理 scratch + workspace 路径。@开启 初始化、exit 清理。 */
+  private readonly sessionCtx = new Map<string, { scratch: Record<string, unknown>; workspacePath?: string }>()
   private running = false
 
   constructor(private readonly deps: AssistantDeps) {
@@ -309,6 +322,7 @@ class Assistant implements AssistantHandle {
       if (isExit) {
         const id = await this.deps.sessionLlm.endSession(sender)
         this.active.delete(sender)
+        this.sessionCtx.delete(sender)
         const reply = `会话已结束${id ? `,会话 ID: ${id}` : ''}。`
         await this.deps.channel.sendText(sender, reply)
         this.deps.onReply?.(sender, { mode: 'text', reply })
@@ -330,6 +344,13 @@ class Assistant implements AssistantHandle {
       }
       await this.deps.channel.sendText(sender, ack)
       this.deps.onReply?.(sender, { mode: 'text', reply: ack })
+      // ★ 会话级上下文初始化:预处理 scratch(跨消息保留)+ workspace 路径(供脚本写产物 / Claude 读)
+      try {
+        const wp = this.deps.sessionLlm?.getWorkspacePath?.(sender)
+        this.sessionCtx.set(sender, { scratch: {}, workspacePath: wp })
+      } catch (err) {
+        console.error('[assistant] init sessionCtx failed:', err)
+      }
       // 剥别名后空或仅剩 @提及 → 文本消息只 ack 不送 Claude;图片仍处理(图像本身即载荷)
       const rest = parsed?.rest ?? text
       const onlyMention = rest === '' || /^@\S+$/.test(rest)
@@ -343,7 +364,15 @@ class Assistant implements AssistantHandle {
   private async handle(msg: IncomingMessage): Promise<void> {
     try {
       const content = await this.toUserContent(msg)
-      const ctx: StepCtx = { userId: msg.user, content, scratch: {} }
+      const s = this.sessionCtx.get(msg.user)
+      const ctx: StepCtx = {
+        userId: msg.user,
+        content,
+        scratch: {},
+        // 会话级 scratch(同一引用,step mutate 直接生效到 map,跨消息保留)
+        session: s?.scratch ?? {},
+        workspacePath: s?.workspacePath,
+      }
       const reply = await runPipeline(this.deps.pipeline, this.deps.models, ctx)
 
       const mode = this.deps.outputPolicy(reply)

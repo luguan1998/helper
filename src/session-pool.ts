@@ -13,6 +13,8 @@ export interface Session {
   setModel?(model: string): void
   /** Claude 分配的会话 ID(用于持久化 + 下次 --resume)。 */
   claudeSessionId?: string
+  /** 该会话拥有的 workspace 子目录路径(供会话预处理脚本写产物;无状态会话 undefined)。 */
+  workspacePath?: string
 }
 
 export interface SessionPoolDeps {
@@ -104,6 +106,11 @@ export class SessionPool {
   /** 该用户是否在池中有活跃会话。 */
   has(userId: string): boolean {
     return this.live.has(userId)
+  }
+
+  /** 该用户活跃会话的 workspace 子目录路径(无活跃会话返 undefined)。供会话预处理脚本写产物。 */
+  getWorkspacePath(userId: string): string | undefined {
+    return this.live.get(userId)?.workspacePath
   }
 
   /** 关闭并清空所有活跃会话(进程退出时调用)。 */

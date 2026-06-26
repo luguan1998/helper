@@ -39,8 +39,8 @@ npm run sim:bot
 > 端口方法:`Channel` = `getNewMessages`/`sendText`/`sendPicture`/`sendFile`;`Renderer` = `markdownToImage`/`markdownToHtml`。`sendFile`+`markdownToHtml` 服务"富文本回复发 HTML 文件"形态(见 `BOT_PICTURE_OUTPUT`),其余方法不变。
 
 **多模型接力**(`src/pipeline.ts` + `src/pipelines/default.ts` + `src/models.ts` + `src/output-policy.ts`):
-- `Step` mutate `StepCtx { userId, content, scratch, reply }`;`modelStep(name)` 调命名模型写 `ctx.reply`,`scriptStep(fn)` 纯变换(可重组 `content` 喂下一步)。线性 steps,分支写在 script 内。
-- 默认 pipeline:图片 → `vision` 识图(描述存 scratch)→ 脚本组装成文本 → `text` 分析;文本消息直接走 `text`。
+- `Step` mutate `StepCtx { userId, content, scratch, session, workspacePath?, reply }`;`modelStep(name)` 调命名模型写 `ctx.reply`,`scriptStep(fn)` 纯变换(可重组 `content` 喂下一步),`scriptFileStep(path)` 调外部脚本(stdin 传 `{content,session,workspacePath}` → stdout 回 `{session?,content?}`,merge 进 ctx)。线性 steps,分支写在 script 内。`scratch` 消息级(每条新建);`session` 会话级(跨消息保留,`@开启` 初始化、`exit` 清理,预处理产物元信息/"已预处理"守卫放此);`workspacePath` 会话 workspace 子目录路径(供脚本写产物 / Claude 读,见下"会话预处理")。
+- 默认 pipeline(`src/pipelines/default.ts`):图片 → `vision` 识图(描述存 scratch)→ 脚本组装 → **通用会话预处理**(默认内置,见下)→ `text` 分析。文本消息:带文件路径则触发预处理,否则直接 `text`。
 - `Models = Record<string, Llm>` 命名注册表,`buildModels(specs)` 从配置构建;`output-policy.ts` 的 `isMarkdown` 决定 picture(渲染)还是 text(直发)。
 - 零配置 `runAssistant({groupId})` 即默认 vision+text 模型 + 接力 pipeline + markdownOutputPolicy + welink 群通道 + state.ts 水位 + 生命周期。默认适配器在 `runAssistant` 内**懒加载**(动态 import),注入假时绝不加载 puppeteer/child_process/welink-cli——核心可零外部依赖驱动。
 
@@ -67,7 +67,8 @@ npm run sim:bot
 - 加/换模型 → `src/models.ts` 加 `ModelSpec`(`model` 切模型 id,`pooled` 控制会话策略)。
 - 改接力顺序 → 换 `src/pipelines/default.ts` 的 steps,或传自定义 `pipeline`。
 - 改输出规则 → 换 `outputPolicy` 函数;或设 `pictureOutput`/`BOT_PICTURE_OUTPUT=html` 把富文本回复从截图改成发 HTML 文件(`OutputMode` ∈ text/picture/html)。
-- 外部脚本文件 → 加 `scriptFileStep(path)` 变体,`Step` 接口不变。
+- 外部脚本文件 → `runScriptFile(ctx,path,opts)` / `scriptFileStep(path)`(已实现,`Step` 接口不变;stdin 传 `{content,session,workspacePath}`、stdout 回 `{session?,content?}`;`runScriptFile` 供 step 内条件调用——仅 `session.pendingInput` 存在才 spawn,避免每条消息都起子进程)。
+- 会话级预处理(跨消息,如日志解压/解析/搜索→问答)→ `StepCtx.session`(会话级 scratch)+ `ctx.workspacePath` + `sessionLlm.getWorkspacePath(userId)`(接缝内:`Session.workspacePath` → `SessionPool.getWorkspacePath` → `SessionLlm`)。预处理由 `src/pipelines/preprocess.ts` 的 `preprocessSteps(opts)` 提供(守卫+抽取 → 条件预处理 → 问答组装),`driver:'script'`(默认,`runScriptFile` 跑外部脚本)/ `'claude'`(同会话 Claude 用 bash)。**默认 pipeline 已内置通用预处理**(任意带扩展名文件路径触发,条件跑);env `BOT_PREPROCESS_SCRIPT`/`BOT_PREPROCESS_INTERPRETER` 配脚本+解释器(node/python/exe,见 `doc/getting-started.md`)。`BOT_PIPELINE=log-qa` 仅当要日志特化(限定 zip/gz/tar/log/txt)+ 无 vision 时用。
 
 ## 备注
 
