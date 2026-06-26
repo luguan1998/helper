@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, extname } from 'node:path'
 import { listMessages, parseContent } from '../store.mjs'
-import { SIM_DIR, WELINK_SIM_ACCOUNT } from '../config.mjs'
+import { SIM_DIR, WELINK_SIM_ACCOUNT, WELINK_SIM_STATE } from '../config.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -177,7 +177,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[sim gui] http://localhost:${PORT}  (group=${SIM_GROUP_ID}, bot=${WELINK_SIM_ACCOUNT}, echo=${echoEnabled})`)
-  console.log(`[sim gui] state: ${join(SIM_DIR, 'state.json')}`)
+  console.log(`[sim gui] state: ${WELINK_SIM_STATE}`)
   console.log('[sim gui] 接入真实 bot 时请关闭 echo(POST /api/config {"echo":false})')
   setInterval(echoTick, ECHO_INTERVAL_MS)
 })
