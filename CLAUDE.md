@@ -60,7 +60,7 @@ npm run sim:bot
 - 环境变量:`WELINK_GROUP_ID`(必填,监控的群 ID)、`WELINK_BIN`(默认 `welink-cli`)、`WELINK_QUERY_COUNT`(默认 20)、`BOT_STATE_DIR`(水位+会话 id 持久化目录,默认 `~/.claude-bot`)、`BOT_PICTURE_OUTPUT`(`image`|`html`,默认 `image`;设 `html` 则富文本回复发 HTML 文件而非截图,`runAssistant` 把默认策略的 `picture` 重映射成 `html`,见 `output-policy.ts` 的 `OutputMode`)。
 - Claude CLI 需 `claude`/`openclaude` 在 PATH;`permissionMode: bypassPermissions`(全自动)。**模型切换经 env `ANTHROPIC_MODEL`**(不用 `--model` flag,跨 claude/openclaude/GLM 变体最稳)。`createClaudeCliLlm({ pooled })`:`true`=按用户续接(对话型),`false`=无状态 spawn→ask→kill(识图等)。
 - 渲染用 **`puppeteer-core`(无 chromium 下载)**:设 `CHROMIUM_PATH` 或自动探测本机 Chrome/Edge。(本机装带下载的 `puppeteer` 会撞公司代理 TLS 失败——故用 core。)
-- Claude 工作目录默认 `workspace/`(隔离的安全边界,bypassPermissions 赋予文件读写权,勿放敏感文件)。
+- Claude 工作目录:base 默认 `workspace/`(隔离的安全边界,bypassPermissions 赋予文件读写权,勿放敏感文件)。**每 pooled 会话开独立子目录** `workspace/<日期时间>`(`@开启` 各不同;claudeSessionId 在 spawn 后首轮 send 才到、且 Windows 不能移动运行中进程 cwd,故用日期时间命名而非对话 id),会话退出(exit/淘汰/进程退出)后若子目录为空则自动回收(非空保留);无状态识图仍用 base。见 `src/workspace.ts`。
 
 ## 演进方式(都不碰核心)
 

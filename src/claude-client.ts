@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs'
 import type { Llm, SessionLlm } from './llm.js'
 import { SessionPool, type Session } from './session-pool.js'
 import { loadSessionId, saveSessionId } from './state.js'
+import { ensureDir, createSessionWorkspace, removeDirIfEmpty } from './workspace.js'
 import type { Reply, UserContent } from './types.js'
 
 // ── 二进制发现(原样复用 ai.ts:62)──
@@ -99,6 +100,8 @@ export interface ClaudeSessionOpts {
   resumeId?: string
   model?: string
   cliCommand?: string
+  /** 该会话拥有的工作目录(退出后空则回收);不设则只作 cwd、不回收。 */
+  ownedWorkspacePath?: string
 }
 
 export class ClaudeSession implements Session {
@@ -106,14 +109,17 @@ export class ClaudeSession implements Session {
   private lineBuffer = ''
   private ready = false
   claudeSessionId?: string
+  /** 该会话拥有的工作目录(退出后空则回收);无状态识图不设。 */
+  private readonly ownedWorkspacePath?: string
 
   /** 当前待回复的 send:收集文本,遇 result 即 resolve。 */
   private pendingResolve?: (reply: Reply) => void
   private pendingReject?: (err: Error) => void
   private pendingText = ''
 
-  private constructor(proc: ChildProcess) {
+  private constructor(proc: ChildProcess, ownedWorkspacePath?: string) {
     this.proc = proc
+    this.ownedWorkspacePath = ownedWorkspacePath
     this.attach()
   }
 
@@ -124,7 +130,7 @@ export class ClaudeSession implements Session {
    */
   static async spawn(opts: ClaudeSessionOpts): Promise<ClaudeSession> {
     const proc = spawnClaude(opts)
-    const session = new ClaudeSession(proc)
+    const session = new ClaudeSession(proc, opts.ownedWorkspacePath)
     session.markReady()
     return session
   }
@@ -217,6 +223,8 @@ export class ClaudeSession implements Session {
         this.readyReject(new Error(`claude failed to start (code ${code})${detail ? `: ${detail}` : ''}`))
       }
       this.failPending(new Error(`claude subprocess exited (code ${code})`))
+      // 会话退出后回收空工作目录(exit/淘汰/进程退出均经此);非空保留
+      if (this.ownedWorkspacePath) void removeDirIfEmpty(this.ownedWorkspacePath)
     })
   }
 
@@ -300,6 +308,8 @@ function createStatelessLlm(opts: ClaudeCliLlmOptions): Llm {
 }
 
 export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<Llm> {
+  // base 工作目录:无状态识图共用此目录,也作 per-session 子目录的父目录
+  await ensureDir(options.cwd)
   if (options.pooled === false) {
     return createStatelessLlm(options)
   }
@@ -307,7 +317,18 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
     cwd: options.cwd,
     systemPrompt: options.systemPrompt,
     maxSessions: options.maxSessions ?? 8,
-    spawn: (opts) => ClaudeSession.spawn({ ...opts, model: options.model, cliCommand: options.cliCommand }),
+    spawn: async (opts) => {
+      // 每个 pooled 会话开独立子目录(@开启 各不同);opts.cwd 即 base
+      const ws = await createSessionWorkspace(opts.cwd)
+      return ClaudeSession.spawn({
+        cwd: ws.path,
+        ownedWorkspacePath: ws.path,
+        systemPrompt: opts.systemPrompt,
+        resumeId: opts.resumeId,
+        model: options.model,
+        cliCommand: options.cliCommand,
+      })
+    },
     loadSessionId,
     saveSessionId,
   })
