@@ -2,7 +2,7 @@
 // 真实 welink-cli 输出格式有变时,只需改此文件(locality 来自接缝)。
 // 群组导向:构造时绑定 groupId,所有 send 固定发到该群;sendText/sendPicture 的 userId
 // 形参仅为兼容端口签名(群模型下被忽略——回复一律发到构造时的群),核心仍传 sender 以备日志/回调。
-// 用 execFile(非 exec)传参数组,避开 Windows shell 对 --text 的 %/&/|/< 转义与注入。
+// 用 execFile 传参数组(structured args,Node 自动给含空格/特殊字符的参数加引号);Windows 上 shell:true 解析 welink-cli 的 .cmd 壳(否则 spawn ENOENT,对齐 claude-client 的 spawnClaude)。
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Channel } from './channel.js'
@@ -144,10 +144,11 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
 
   const prefixArgs = script ? [script] : []
 
-  /** 调 welink-cli im 子命令。execFile 无 shell:binary + args 数组,--text 原样透传,无转义/注入。 */
+  /** 调 welink-cli im 子命令。execFile 传参数组(structured);Windows 上 shell:true 解析 .cmd 壳(对齐 claude-client spawnClaude),否则 spawn welink-cli ENOENT。Node 自动给含空格/特殊字符的参数加引号。 */
   async function runIm(...args: string[]): Promise<string> {
     const { stdout } = await execFileAsync(binary, [...prefixArgs, 'im', ...args], {
       maxBuffer: 10 * 1024 * 1024,
+      shell: process.platform === 'win32',
     })
     return stdout
   }
