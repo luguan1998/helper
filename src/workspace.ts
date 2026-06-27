@@ -13,10 +13,12 @@ export async function ensureDir(path: string): Promise<void> {
  * 在 base 下新建一个唯一会话工作目录(@开启 每次一个,互不相同)。
  * 目录名用日期时间(带毫秒):claudeSessionId 在 spawn 后首轮 send 才到达,无法在 spawn 时
  * 用作目录名,且 Windows 不能移动运行中进程的 cwd,故改用日期时间;毫秒精度避免同秒碰撞。
+ * groupId 给定时按群分子目录(workspace/<groupId>/<datetime>):多群并发消除同毫秒碰撞 + 调试可读。
  */
-export async function createSessionWorkspace(baseCwd: string): Promise<{ path: string }> {
+export async function createSessionWorkspace(baseCwd: string, groupId?: string): Promise<{ path: string }> {
   const name = new Date().toISOString().replace(/:/g, '-') // → 2026-06-26T14-30-52.123Z
-  const path = join(baseCwd, name)
+  const parent = groupId ? join(baseCwd, groupId) : baseCwd
+  const path = join(parent, name)
   await mkdir(path, { recursive: true })
   return { path }
 }

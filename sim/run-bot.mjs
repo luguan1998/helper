@@ -14,7 +14,7 @@ const env = {
   ...process.env,
   WELINK_CLI_BIN: process.env.WELINK_CLI_BIN ?? process.execPath, // node 二进制
   WELINK_CLI_SCRIPT: process.env.WELINK_CLI_SCRIPT ?? welinkCli,  // sim CLI 脚本
-  WELINK_GROUP_ID: process.env.WELINK_GROUP_ID ?? '100001',
+  WELINK_GROUP_IDS: process.env.WELINK_GROUP_IDS ?? process.env.WELINK_GROUP_ID ?? '100001',
   WELINK_ACCOUNT: process.env.WELINK_ACCOUNT ?? 'bot01',
   // 图片信封 URL 前缀,须指向 sim:gui 的地址(默认本机 3000);GUI 改端口时同步改此。
   SIM_BASE_URL: process.env.SIM_BASE_URL ?? 'http://localhost:3000',
@@ -23,7 +23,7 @@ const env = {
 console.log('[sim run-bot] 启动真实 bot,channel=welink(sim)')
 console.log(`  WELINK_CLI_BIN=${env.WELINK_CLI_BIN}`)
 console.log(`  WELINK_CLI_SCRIPT=${env.WELINK_CLI_SCRIPT}`)
-console.log(`  WELINK_GROUP_ID=${env.WELINK_GROUP_ID}  WELINK_ACCOUNT=${env.WELINK_ACCOUNT}`)
+console.log(`  WELINK_GROUP_IDS=${env.WELINK_GROUP_IDS}  WELINK_ACCOUNT=${env.WELINK_ACCOUNT}`)
 console.log('  先确保 sim:gui 已启动(echo 关),否则 bot 无状态文件可读')
 
 // 直接用 node 跑 tsx 的 CLI(避开 Windows npm 是 .cmd 需 shell 的问题 + DEP0190 警告)。

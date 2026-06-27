@@ -168,6 +168,9 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
     ? (reply) => { const m = basePolicy(reply); return m === 'picture' ? 'html' : m }
     : basePolicy
 
+  // 本助手监控的群 ID:零配置路径(buildModels / welink 通道 / 水位)必填;注入 channel+models 的测试路径可不提供。
+  const groupId = options.groupId ?? process.env.WELINK_GROUP_ID
+
   let models: Models
   let pipeline: Pipeline
   // sessionLlm:注入则显式;零配置自动取 models.text(对话型,实现 SessionLlm);测试路径默认 undefined(无生命周期)
@@ -182,8 +185,9 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
     pipeline = options.pipeline ?? { steps: [modelStep('default')] }
   } else {
     // 零配置:默认 vision+text + 接力 pipeline + 生命周期(text 模型)
+    if (!groupId) throw new Error('runAssistant: groupId required (set options.groupId or WELINK_GROUP_ID)')
     const specs = buildDefaultSpecs(options)
-    models = await buildModels(specs, { cwd: options.claudeCwd ?? 'workspace', cliCommand: options.cliCommand })
+    models = await buildModels(specs, { cwd: options.claudeCwd ?? 'workspace', cliCommand: options.cliCommand, groupId })
     pipeline = pickDefaultPipeline(options, models)
     sessionLlm = options.sessionLlm ?? (models.text as SessionLlm | undefined)
   }
@@ -193,7 +197,6 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
   let loadWatermark = options.loadWatermark
   let saveWatermark = options.saveWatermark
   if (!channel) {
-    const groupId = options.groupId ?? process.env.WELINK_GROUP_ID
     if (!groupId) throw new Error('runAssistant: groupId required (set options.groupId or WELINK_GROUP_ID)')
     channel = (await import('./channels/welink-channel.js')).createWelinkChannel({ groupId })
     // 生产水位:state.ts 持久化(首次返回 undefined → 核心据比排除历史)
@@ -245,8 +248,8 @@ class Assistant implements AssistantHandle {
   private watermarkLoaded = false
   private readonly loadWatermark: () => Promise<string | undefined>
   private readonly saveWatermark: (id: string) => Promise<void>
-  /** 已开启会话的发送者集合(生命周期;仅 sessionLlm 注入时使用)。 */
-  private readonly active = new Set<string>()
+  /** 当前活跃发送者(每群单活跃:null=无人活跃;仅 sessionLlm 注入时使用)。 */
+  private activeUserId: string | null = null
   /** 会话级上下文(跨消息保留):预处理 scratch + workspace 路径。@开启 初始化、exit 清理。 */
   private readonly sessionCtx = new Map<string, { scratch: Record<string, unknown>; workspacePath?: string }>()
   private running = false
@@ -275,6 +278,9 @@ class Assistant implements AssistantHandle {
 
   stop(): void {
     this.running = false
+    // 优雅退出:清理各模型底层资源(对话型 SessionPool 的 Claude 子进程;无状态/假实现无 stop 则跳过)。
+    // 不打断在途 tick(等当前 await route 自然结束或被 kill 触发 reject);index.ts 的 setTimeout 兜底强退。
+    for (const m of Object.values(this.deps.models)) m.stop?.()
   }
 
   async tick(): Promise<void> {
@@ -328,10 +334,10 @@ class Assistant implements AssistantHandle {
   }
 
   /**
-   * 生命周期路由。注入 sessionLlm:
-   *   未活跃 + @bot → 开启(回 ack)+ 把本条丢给 Claude 处理(一句话即开问答);
-   *   已活跃 → exit 结束 / 其余(含继续 @bot)直接处理;
-   *   未活跃 + 非@ → 忽略。
+   * 生命周期路由(每群单活跃)。注入 sessionLlm:
+   *   本人活跃 → exit 结束 / 其余(含继续 @bot)直接处理;
+   *   他人 @ → 若已有人活跃则拒绝(提示当前活跃者,不开新会话),否则开启 + ack + (别名)切模型 + 处理;
+   *   非本人且非 @ → 忽略(不处理、不回复,不污染现有会话)。
    * 未注入 sessionLlm → 每条新消息直接处理(旧行为)。
    */
   private async route(msg: IncomingMessage): Promise<void> {
@@ -343,11 +349,11 @@ class Assistant implements AssistantHandle {
     const text = (msg.content ?? '').trim()
     const isExit = this.deps.exitKeywords.some(k => text.toLowerCase() === k)
 
-    if (this.active.has(sender)) {
-      // 已活跃:exit 结束,否则处理(含继续 @bot 的消息)
+    if (this.activeUserId === sender) {
+      // 本人活跃:exit 结束,否则处理(含继续 @bot 的消息)
       if (isExit) {
         const id = await this.deps.sessionLlm.endSession(sender)
-        this.active.delete(sender)
+        this.activeUserId = null
         this.sessionCtx.delete(sender)
         const reply = `会话已结束${id ? `,会话 ID: ${id}` : ''}。`
         await this.deps.channel.sendText(sender, reply)
@@ -356,9 +362,16 @@ class Assistant implements AssistantHandle {
         await this.handle(msg)
       }
     } else if (msg.at) {
-      // 未活跃 + @bot:开启 + 回 ack + (若带模型别名)切模型 + 把本条(剥别名后)丢给 Claude 处理
+      if (this.activeUserId !== null) {
+        // ★ 已有他人活跃 → 拒绝(仅对 @ 触发;普通消息不回复,避免群发垃圾)
+        const reply = `${this.activeUserId} 正在会话中,请待其发送 exit 后再@我。`
+        await this.deps.channel.sendText(sender, reply)
+        this.deps.onReply?.(sender, { mode: 'text', reply })
+        return
+      }
+      // 无人活跃 + @bot:开启 + 回 ack + (若带模型别名)切模型 + 把本条(剥别名后)丢给 Claude 处理
       await this.deps.sessionLlm.startSession(sender)
-      this.active.add(sender)
+      this.activeUserId = sender
       const parsed = parseModelAlias(text)
       let ack: string
       if (parsed) {
@@ -384,7 +397,7 @@ class Assistant implements AssistantHandle {
       if (parsed) msg.content = parsed.rest
       await this.handle(msg)
     }
-    // 未活跃 + 非@:忽略(不处理、不回复)
+    // 非本人且非 @:忽略(不处理、不回复)
   }
 
   private async handle(msg: IncomingMessage): Promise<void> {

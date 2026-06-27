@@ -313,6 +313,8 @@ export interface ClaudeCliLlmOptions {
   pooled?: boolean
   maxSessions?: number
   cliCommand?: string
+  /** 本 Llm 服务的目标群 ID:按群隔离 state 持久化(闭包绑定 load/saveSessionId)与 workspace 子目录。 */
+  groupId: string
   /** 是否流式输出 thinking 块;不设则取 env BOT_INCLUDE_THINKING(1/true/yes/on)。 */
   includeThinking?: boolean
 }
@@ -349,8 +351,8 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
     systemPrompt: options.systemPrompt,
     maxSessions: options.maxSessions ?? 8,
     spawn: async (opts) => {
-      // 每个 pooled 会话开独立子目录(@开启 各不同);opts.cwd 即 base
-      const ws = await createSessionWorkspace(opts.cwd)
+      // 每个 pooled 会话开独立子目录(@开启 各不同);按群分子目录防多群同毫秒碰撞
+      const ws = await createSessionWorkspace(opts.cwd, options.groupId)
       return ClaudeSession.spawn({
         cwd: ws.path,
         ownedWorkspacePath: ws.path,
@@ -361,8 +363,9 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
         includeThinking,
       })
     },
-    loadSessionId,
-    saveSessionId,
+    // 闭包绑定 groupId:每群独立 state 文件,消除跨群 userId 串号(SessionPool 本身仍 userId 键,因每群一个 pool 实例)
+    loadSessionId: (uid) => loadSessionId(options.groupId, uid),
+    saveSessionId: (uid, id) => saveSessionId(options.groupId, uid, id),
   })
   const llm: SessionLlm = {
     async ask(userId: string, content: UserContent, onPartial?: OnPartial): Promise<Reply> {
@@ -384,6 +387,9 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
     },
     getWorkspacePath(userId: string): string | undefined {
       return pool.getWorkspacePath(userId)
+    },
+    stop(): void {
+      pool.stopAll()
     },
   }
   return llm

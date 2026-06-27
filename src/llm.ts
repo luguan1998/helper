@@ -11,6 +11,8 @@ export interface Llm {
    * 无状态/中间步骤模型可忽略此参数(不传即不流式)。
    */
   ask(userId: string, content: UserContent, onPartial?: OnPartial): Promise<Reply>
+  /** 可选:释放底层资源(如 Claude 子进程池)。优雅退出时由 Assistant.stop() 遍历调用;无状态/假实现可不实现。 */
+  stop?(): void
 }
 
 /**

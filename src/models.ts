@@ -17,6 +17,8 @@ export interface ModelSpec {
 export interface ModelsShared {
   cwd: string
   cliCommand?: string
+  /** 本组模型服务的目标群 ID:透传给 createClaudeCliLlm,按群隔离 state/workspace。 */
+  groupId: string
 }
 
 /** 从配置数组构建命名模型实例。 */
@@ -30,6 +32,7 @@ export async function buildModels(specs: ModelSpec[], shared: ModelsShared): Pro
       pooled: spec.pooled,
       maxSessions: spec.maxSessions,
       cliCommand: shared.cliCommand,
+      groupId: shared.groupId,
     })
   }
   return models
