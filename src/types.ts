@@ -31,3 +31,15 @@ export interface Reply {
   /** 完整 Markdown(待 Renderer 渲染成截图)。 */
   markdown: string
 }
+
+/**
+ * Llm 生成过程中的中间产物(流式回调用)。
+ * 通讯软件不支持流式,故仅"块完整"时回调(非逐 token)——目前只承载已完成的 thinking 块。
+ */
+export interface ReplyPartial {
+  /** 已完成的 thinking 块文本。 */
+  thinking?: string
+}
+
+/** 流式回调:同步返回(实现方内部用 chain 处理异步,避免泄漏 promise)。 */
+export type OnPartial = (partial: ReplyPartial) => void

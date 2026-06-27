@@ -1,13 +1,16 @@
 // Llm 端口 —— true-external(Claude 子进程)。
 // 两套适配器:ClaudeCliLlm(生产,包 vibe-ide ai.ts)/ FakeLlm(测试),故为真接缝。
-import type { UserContent, Reply } from './types.js'
+import type { UserContent, Reply, OnPartial } from './types.js'
 
 export interface Llm {
   /**
    * 按 userId 取/建隔离会话后提问(同用户串行、跨用户隔离)。
    * 必须等完整回复后再 resolve(通讯软件不支持流式)。
+   * 可选 onPartial:生成中每完成一个 thinking 块时回调(块级,非逐 token),
+   * 供"先发 think 再发结果"——回调在 result 之前触发,调用方据此先发 thinking 消息。
+   * 无状态/中间步骤模型可忽略此参数(不传即不流式)。
    */
-  ask(userId: string, content: UserContent): Promise<Reply>
+  ask(userId: string, content: UserContent, onPartial?: OnPartial): Promise<Reply>
 }
 
 /**

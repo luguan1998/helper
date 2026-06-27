@@ -8,7 +8,7 @@ import type { Llm, SessionLlm } from './llm.js'
 import { SessionPool, type Session } from './session-pool.js'
 import { loadSessionId, saveSessionId } from './state.js'
 import { ensureDir, createSessionWorkspace, removeDirIfEmpty } from './workspace.js'
-import type { Reply, UserContent } from './types.js'
+import type { Reply, UserContent, OnPartial } from './types.js'
 
 // ── 二进制发现(原样复用 ai.ts:62)──
 const AI_INSTALL_CMD = 'npm install -g @anthropic-ai/claude-code@latest'
@@ -102,6 +102,14 @@ export interface ClaudeSessionOpts {
   cliCommand?: string
   /** 该会话拥有的工作目录(退出后空则回收);不设则只作 cwd、不回收。 */
   ownedWorkspacePath?: string
+  /** 是否流式输出 thinking 块(env BOT_INCLUDE_THINKING);开启则每完成一个 thinking 块经 onPartial 回调发出,不拼进最终回复。 */
+  includeThinking?: boolean
+}
+
+/** 解析布尔 env:1/true/yes/on(大小写不敏感)=true,其余(含未设/0/false/no/off)=false。 */
+function parseBoolEnv(v: string | undefined): boolean {
+  if (!v) return false
+  return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
 }
 
 export class ClaudeSession implements Session {
@@ -111,20 +119,25 @@ export class ClaudeSession implements Session {
   claudeSessionId?: string
   /** 该会话拥有的工作目录(退出后空则回收);无状态识图不设。 */
   private readonly ownedWorkspacePath?: string
+  /** 是否把 thinking 块流式输出(env BOT_INCLUDE_THINKING)。 */
+  private readonly includeThinking: boolean
 
   /** 该会话拥有的 workspace 子目录路径(供会话预处理脚本写产物;无状态会话 undefined)。 */
   get workspacePath(): string | undefined {
     return this.ownedWorkspacePath
   }
 
-  /** 当前待回复的 send:收集文本,遇 result 即 resolve。 */
+  /** 当前待回复的 send:收集文本,遇 result 即 resolve;启用时经 onPartial 流式发 thinking。 */
   private pendingResolve?: (reply: Reply) => void
   private pendingReject?: (err: Error) => void
   private pendingText = ''
+  /** 本轮流式回调(thinking 块完成时触发);send 注入,result/failPending 清空防 pooled 复用串用户。 */
+  private onPartial?: OnPartial
 
-  private constructor(proc: ChildProcess, ownedWorkspacePath?: string) {
+  private constructor(proc: ChildProcess, ownedWorkspacePath: string | undefined, includeThinking: boolean) {
     this.proc = proc
     this.ownedWorkspacePath = ownedWorkspacePath
+    this.includeThinking = includeThinking
     this.attach()
   }
 
@@ -135,19 +148,20 @@ export class ClaudeSession implements Session {
    */
   static async spawn(opts: ClaudeSessionOpts): Promise<ClaudeSession> {
     const proc = spawnClaude(opts)
-    const session = new ClaudeSession(proc, opts.ownedWorkspacePath)
+    const session = new ClaudeSession(proc, opts.ownedWorkspacePath, opts.includeThinking ?? false)
     session.markReady()
     return session
   }
 
-  /** 提问,等完整回复(text 块拼接)后 resolve。 */
-  async send(content: UserContent): Promise<Reply> {
+  /** 提问,等完整回复(text 块拼接)后 resolve;启用时经 onPartial 流式发 thinking 块(result 之前)。 */
+  async send(content: UserContent, onPartial?: OnPartial): Promise<Reply> {
     if (!this.ready) throw new Error('session not ready')
     const ndjson = JSON.stringify(this.buildUserMessage(content)) + '\n'
     return new Promise<Reply>((resolve, reject) => {
       this.pendingResolve = resolve
       this.pendingReject = reject
       this.pendingText = ''
+      this.onPartial = onPartial
       this.proc.stdin?.write(ndjson)
     })
   }
@@ -248,11 +262,17 @@ export class ClaudeSession implements Session {
         break
       }
       case 'assistant': {
-        // 收集本轮所有 assistant 文本块,直到 result。
+        // 收集本轮所有 assistant 文本块,直到 result;启用时把 thinking 块经 onPartial 流式发出。
+        // thinking 块格式 { type:'thinking', thinking:'...' }(参考 vibe-ide ai.ts:220);redacted_thinking 无明文,跳过。
+        // onPartial 同步调用(实现方内部 chain 异步);try/catch 防 sync 抛出中断 block 循环。
         const blocks = msg.message?.content
         if (Array.isArray(blocks)) {
           for (const b of blocks) {
-            if (b.type === 'text' && typeof b.text === 'string') this.pendingText += b.text
+            if (b.type === 'text' && typeof b.text === 'string') {
+              this.pendingText += b.text
+            } else if (this.includeThinking && this.onPartial && b.type === 'thinking' && typeof b.thinking === 'string') {
+              try { this.onPartial({ thinking: b.thinking }) } catch { /* 不中断 block 循环 */ }
+            }
           }
         }
         break
@@ -260,6 +280,7 @@ export class ClaudeSession implements Session {
       case 'result': {
         const reply: Reply = { markdown: this.pendingText }
         this.pendingText = ''
+        this.onPartial = undefined
         this.pendingResolve?.(reply)
         this.pendingResolve = undefined
         this.pendingReject = undefined
@@ -277,6 +298,7 @@ export class ClaudeSession implements Session {
       this.pendingReject = undefined
       this.pendingResolve = undefined
       this.pendingText = ''
+      this.onPartial = undefined
     }
   }
 }
@@ -291,20 +313,23 @@ export interface ClaudeCliLlmOptions {
   pooled?: boolean
   maxSessions?: number
   cliCommand?: string
+  /** 是否流式输出 thinking 块;不设则取 env BOT_INCLUDE_THINKING(1/true/yes/on)。 */
+  includeThinking?: boolean
 }
 
 /** 无状态 Llm:每次 ask 新建会话、ask 完即 kill(userId 被忽略,无多轮续接)。识图等用。 */
-function createStatelessLlm(opts: ClaudeCliLlmOptions): Llm {
+function createStatelessLlm(opts: ClaudeCliLlmOptions, includeThinking: boolean): Llm {
   return {
-    async ask(_userId: string, content: UserContent): Promise<Reply> {
+    async ask(_userId: string, content: UserContent, onPartial?: OnPartial): Promise<Reply> {
       const session = await ClaudeSession.spawn({
         cwd: opts.cwd,
         systemPrompt: opts.systemPrompt,
         model: opts.model,
         cliCommand: opts.cliCommand,
+        includeThinking,
       })
       try {
-        return await session.send(content)
+        return await session.send(content, onPartial)
       } finally {
         session.kill()
       }
@@ -315,8 +340,9 @@ function createStatelessLlm(opts: ClaudeCliLlmOptions): Llm {
 export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<Llm> {
   // base 工作目录:无状态识图共用此目录,也作 per-session 子目录的父目录
   await ensureDir(options.cwd)
+  const includeThinking = options.includeThinking ?? parseBoolEnv(process.env.BOT_INCLUDE_THINKING)
   if (options.pooled === false) {
-    return createStatelessLlm(options)
+    return createStatelessLlm(options, includeThinking)
   }
   const pool = new SessionPool({
     cwd: options.cwd,
@@ -332,15 +358,16 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
         resumeId: opts.resumeId,
         model: options.model,
         cliCommand: options.cliCommand,
+        includeThinking,
       })
     },
     loadSessionId,
     saveSessionId,
   })
   const llm: SessionLlm = {
-    async ask(userId: string, content: UserContent): Promise<Reply> {
+    async ask(userId: string, content: UserContent, onPartial?: OnPartial): Promise<Reply> {
       const session = await pool.acquire(userId)
-      return session.send(content)
+      return session.send(content, onPartial)
     },
     async startSession(userId: string): Promise<void> {
       await pool.startFresh(userId)

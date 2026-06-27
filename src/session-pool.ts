@@ -1,12 +1,15 @@
 // 按用户隔离的会话池 + LRU。
 // 纯编排逻辑(取/建会话、touch、淘汰、resume),通过注入 spawn 工厂与 load/save 回调,
 // 可完全脱离真实子进程单测(in-process)。
-import type { Reply, UserContent } from './types.js'
+import type { Reply, UserContent, OnPartial } from './types.js'
 
 /** 一个用户会话的最小契约(ClaudeSession 实现它;测试用假实现)。 */
 export interface Session {
-  /** 该用户的会话上下文内提问,等完整回复后 resolve。 */
-  send(content: UserContent): Promise<Reply>
+  /**
+   * 该用户的会话上下文内提问,等完整回复后 resolve。
+   * 可选 onPartial:生成中每完成一个 thinking 块时回调(供"先发 think 再发结果";见 Llm.ask)。
+   */
+  send(content: UserContent, onPartial?: OnPartial): Promise<Reply>
   /** 关闭会话子进程(LRU 淘汰/停止时调用)。 */
   kill(): void
   /** 运行期切模型(经 set_model control_request);无状态会话可不实现。 */

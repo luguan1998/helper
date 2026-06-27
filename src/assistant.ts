@@ -5,7 +5,7 @@
 import type { Channel } from './channels/channel.js'
 import type { Llm, Models, SessionLlm } from './llm.js'
 import type { Renderer } from './renderers/renderer.js'
-import type { IncomingMessage, UserContent } from './types.js'
+import type { IncomingMessage, UserContent, OnPartial } from './types.js'
 import { downloadImage } from './image.js'
 import { runPipeline, modelStep, type Pipeline, type StepCtx } from './pipeline.js'
 import type { OutputMode, OutputPolicy } from './output-policy.js'
@@ -20,6 +20,10 @@ const DEFAULT_POLL_MS = 1000
 const DEFAULT_MAX_SESSIONS = 8
 const SUMMARY_MAX = 100
 const DEFAULT_EXIT_KEYWORDS = ['esc', 'quit', 'exit']
+/** 单条 thinking 消息发送超时(ms):防 welink sendText 挂起阻塞最终回复。 */
+const THINKING_SEND_TIMEOUT_MS = 30_000
+/** 单条 thinking 消息最大字符:超长分段(防 IM 消息长度上限静默失败)。 */
+const THINKING_CHUNK_MAX = 4000
 
 /** @bot 开启时可指定的模型别名;CLI 经 ANTHROPIC_DEFAULT_*_MODEL 解析(参考 vibe-ide ai.ts:861)。 */
 const MODEL_ALIASES = ['haiku', 'sonnet', 'opus', 'fable'] as const
@@ -126,6 +130,28 @@ function summarize(markdown: string, where: string): string {
   const stripped = markdown.replace(/```[\s\S]*?```/g, '[代码块]').replace(/\s+/g, ' ').trim()
   const over = stripped.length > SUMMARY_MAX
   return `🤖 ${stripped.slice(0, SUMMARY_MAX)}${over ? '…' : ''}(查看${where}获取完整内容)`
+}
+
+/** 给 promise 套一个超时:超时则 reject(原 promise 不取消,可能晚到但不再阻塞)。 */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let t: NodeJS.Timeout | undefined
+  const timeout = new Promise<never>((_, reject) => { t = setTimeout(() => reject(new Error('timeout')), ms) })
+  return Promise.race([p, timeout]).finally(() => { if (t) clearTimeout(t) })
+}
+
+/** 把长文本按段落/换行切成 ≤max 的段(尽量不截断行);用于分段发送长 thinking。 */
+function chunkThinking(text: string, max = THINKING_CHUNK_MAX): string[] {
+  if (text.length <= max) return [text]
+  const chunks: string[] = []
+  let rest = text
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf('\n', max) // 优先在换行处切
+    if (cut <= 0) cut = max                 // 无换行则硬切
+    chunks.push(rest.slice(0, cut))
+    rest = rest.slice(cut).replace(/^\n+/, '')
+  }
+  if (rest) chunks.push(rest)
+  return chunks
 }
 
 /**
@@ -362,6 +388,17 @@ class Assistant implements AssistantHandle {
   }
 
   private async handle(msg: IncomingMessage): Promise<void> {
+    // 流式 thinking:每完成一个 thinking 块先发 `💭 ` 纯文本(绕过 outputPolicy,永不触发 html/picture);
+    // 串行排队,最终回复前 drain → 保证"先 think 后结果"。includeThinking=off 时 onPartial 不触发,chain 恒 resolved。
+    let partialChain: Promise<void> = Promise.resolve()
+    const onPartial: OnPartial = (p) => {
+      if (!p.thinking) return
+      for (const chunk of chunkThinking(p.thinking)) {
+        partialChain = partialChain
+          .then(() => withTimeout(this.deps.channel.sendText(msg.user, `💭 ${chunk}`), THINKING_SEND_TIMEOUT_MS))
+          .catch(() => { /* 单条 thinking 发送失败/超时不阻断后续与最终回复 */ })
+      }
+    }
     try {
       const content = await this.toUserContent(msg)
       const s = this.sessionCtx.get(msg.user)
@@ -372,8 +409,12 @@ class Assistant implements AssistantHandle {
         // 会话级 scratch(同一引用,step mutate 直接生效到 map,跨消息保留)
         session: s?.scratch ?? {},
         workspacePath: s?.workspacePath,
+        onPartial,
       }
       const reply = await runPipeline(this.deps.pipeline, this.deps.models, ctx)
+
+      // 等 thinking 消息发完再发最终回复(先 think 后结果)
+      await partialChain
 
       const mode = this.deps.outputPolicy(reply)
       if (mode === 'picture') {
@@ -391,7 +432,8 @@ class Assistant implements AssistantHandle {
         this.deps.onReply?.(msg.user, { mode, reply })
       }
     } catch (err) {
-      // 降级:发纯文本致歉,循环不死
+      // 先 drain 在途 thinking(防 thinking 与致歉乱序),再发纯文本致歉,循环不死
+      await partialChain.catch(() => {})
       try {
         await this.deps.channel.sendText(msg.user, `抱歉,处理该消息时出错:${(err as Error).message}`)
       } catch {

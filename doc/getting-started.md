@@ -191,6 +191,7 @@ sys.stdout.write(json.dumps({
 | `BOT_PREPROCESS_SCRIPT` | 否 | `scripts/preprocess-log.js` | 预处理脚本路径(支持 .js/.py/.exe 等) |
 | `BOT_PREPROCESS_INTERPRETER` | 否 | 不设=node | 脚本解释器(见第 3 节表) |
 | `BOT_PICTURE_OUTPUT` | 否 | `image` | `image`=发截图;`html`=发 HTML 文件 |
+| `BOT_INCLUDE_THINKING` | 否 | 不设=关 | `1`/`true`/`yes`/`on`=把 Claude 思考过程(thinking 块)流式发出:每完成一块先发一条 `💭 ` 纯文本消息,再发最终回复(先 think 后结果) |
 | `BOT_STATE_DIR` | 否 | `~/.claude-bot` | 水位/会话 ID 持久化目录 |
 | `CHROMIUM_PATH` | 否 | 自动探测 | Chrome/Edge 可执行路径(截图失败时设) |
 | `BOT_PIPELINE` | 否 | 默认 pipeline | `log-qa`=用日志特化无识图 pipeline(日常不用设,默认已含预处理) |

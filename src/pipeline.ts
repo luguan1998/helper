@@ -5,11 +5,12 @@
 import { execFile } from 'node:child_process'
 import { execPath } from 'node:process'
 import type { Models } from './llm.js'
-import type { UserContent } from './types.js'
+import type { UserContent, OnPartial } from './types.js'
 
 /** 步骤间上下文:content 喂下一个模型;scratch 给脚本暂存;reply 是上一个模型输出。
  *  session 是会话级暂存(跨消息保留:@开启 时初始化、exit 时清理)——预处理产物元信息、"已预处理"
- *  守卫标志等放这里;workspacePath 是该会话的 workspace 子目录路径,供脚本写文件 / Claude 读产物。 */
+ *  守卫标志等放这里;workspacePath 是该会话的 workspace 子目录路径,供脚本写文件 / Claude 读产物。
+ *  onPartial 是流式回调(thinking 块完成时触发),由 Assistant 注入、modelStep 透传给 Llm.ask。 */
 export interface StepCtx {
   userId: string
   content: UserContent
@@ -19,6 +20,8 @@ export interface StepCtx {
   /** 会话 workspace 子目录路径(text 会话才有;无状态/未注入 sessionLlm 时 undefined)。 */
   workspacePath?: string
   reply?: string
+  /** 流式回调:模型生成中每完成一个 thinking 块时触发(Assistant 注入,经 modelStep 透传给 Llm.ask)。 */
+  onPartial?: OnPartial
 }
 
 export type Step = (ctx: StepCtx, models: Models) => Promise<void>
@@ -40,7 +43,7 @@ export function modelStep(name: string): Step {
   return async (ctx, models) => {
     const model = models[name]
     if (!model) throw new Error(`model '${name}' not found in registry`)
-    const reply = await model.ask(ctx.userId, ctx.content)
+    const reply = await model.ask(ctx.userId, ctx.content, ctx.onPartial)
     ctx.reply = reply.markdown
   }
 }
