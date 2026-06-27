@@ -17,6 +17,7 @@ $WELINK_ACCOUNT  = "bot01"    # bot's welink login account (self-msg filter; @ t
 # $CHROMIUM_PATH      = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 # $BOT_STATE_DIR      = "$env:USERPROFILE\.claude-bot"
 # $BOT_PICTURE_OUTPUT = "image"   # image | html
+# $env:BOT_DEBUG        = "1"     # log each received msg + route decision (id/sender/at/state)
 # -------------------------------
 
 $ErrorActionPreference = "Stop"

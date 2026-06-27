@@ -324,6 +324,9 @@ class Assistant implements AssistantHandle {
       this.watermark = msg.id
       try { await this.saveWatermark(msg.id) } catch (err) { console.error('[assistant] saveWatermark failed:', err) }
       this.deps.onReceive?.(msg)
+      if (process.env.BOT_DEBUG) {
+        console.log(`[assistant] recv id=${msg.id} sender=${msg.user} at=${msg.at ?? false} type=${msg.type} ${(msg.content ?? '').slice(0, 60)}`)
+      }
       try {
         await this.route(msg)
       } catch (err) {
@@ -348,6 +351,11 @@ class Assistant implements AssistantHandle {
     const sender = msg.user
     const text = (msg.content ?? '').trim()
     const isExit = this.deps.exitKeywords.some(k => text.toLowerCase() === k)
+
+    if (process.env.BOT_DEBUG) {
+      const st = this.activeUserId === sender ? 'self' : this.activeUserId !== null ? 'busy' : 'idle'
+      console.log(`[assistant] route id=${msg.id} sender=${sender} at=${msg.at ?? false} state=${st} exit=${isExit}`)
+    }
 
     if (this.activeUserId === sender) {
       // 本人活跃:exit 结束,否则处理(含继续 @bot 的消息)
