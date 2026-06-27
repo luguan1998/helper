@@ -11,6 +11,7 @@ $GroupIds        = "100001,100002"    # group IDs to monitor, comma-separated
 $IncludeThinking = "0"        # 1 = stream thinking blocks before final reply; 0 = off
 $QueryCount      = 20         # messages fetched per poll
 $PollIntervalMs  = 1000       # poll interval in ms
+$WELINK_ACCOUNT  = "bot01"    # bot's welink login account (self-msg filter; @ this name) - set to your REAL account
 # Optional (uncomment to override):
 # $WELINK_BIN         = "welink-cli"
 # $CHROMIUM_PATH      = "C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -22,6 +23,7 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
 $env:WELINK_GROUP_IDS     = $GroupIds
+$env:WELINK_ACCOUNT       = $WELINK_ACCOUNT
 $env:BOT_INCLUDE_THINKING = $IncludeThinking
 $env:WELINK_QUERY_COUNT   = $QueryCount
 $env:BOT_POLL_INTERVAL_MS = $PollIntervalMs
@@ -30,5 +32,5 @@ if ($CHROMIUM_PATH)      { $env:CHROMIUM_PATH      = $CHROMIUM_PATH }
 if ($BOT_STATE_DIR)      { $env:BOT_STATE_DIR      = $BOT_STATE_DIR }
 if ($BOT_PICTURE_OUTPUT) { $env:BOT_PICTURE_OUTPUT = $BOT_PICTURE_OUTPUT }
 
-Write-Host ("[start] groups={0} think={1} query={2} poll={3}ms" -f $GroupIds,$IncludeThinking,$QueryCount,$PollIntervalMs) -ForegroundColor Cyan
+Write-Host ("[start] account={0} groups={1} think={2} query={3} poll={4}ms" -f $WELINK_ACCOUNT,$GroupIds,$IncludeThinking,$QueryCount,$PollIntervalMs) -ForegroundColor Cyan
 npm run dev
