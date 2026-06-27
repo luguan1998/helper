@@ -2,8 +2,9 @@
 // 真实 welink-cli 输出格式有变时,只需改此文件(locality 来自接缝)。
 // 群组导向:构造时绑定 groupId,所有 send 固定发到该群;sendText/sendPicture 的 userId
 // 形参仅为兼容端口签名(群模型下被忽略——回复一律发到构造时的群),核心仍传 sender 以备日志/回调。
-// 用 execFile 传参数组(structured args,Node 自动给含空格/特殊字符的参数加引号);Windows 上 shell:true 解析 welink-cli 的 .cmd 壳(否则 spawn ENOENT,对齐 claude-client 的 spawnClaude)。
-import { execFile } from 'node:child_process'
+// 用 execFile 传参数组(structured args,Node 自动给含空格/换行/引号的参数加引号);Windows 上
+// `where` 解析全路径后无 shell spawn(既解决 PATH 不搜的 ENOENT,又避免 shell 切参数——shell 会按空格/换行截断 --text)。
+import { execFile, execSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Channel } from './channel.js'
 import type { IncomingMessage } from '../types.js'
@@ -144,13 +145,49 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
 
   const prefixArgs = script ? [script] : []
 
-  /** 调 welink-cli im 子命令。execFile 传参数组(structured);Windows 上 shell:true 解析 .cmd 壳(对齐 claude-client spawnClaude),否则 spawn welink-cli ENOENT。Node 自动给含空格/特殊字符的参数加引号。 */
+  // Windows: Node 的 spawn(CreateProcess 用 lpApplicationName)不搜 PATH → 裸名 `welink-cli` ENOENT
+  // (sim 用 process.execPath 全路径绕过)。`where` 解析全路径后无 shell spawn:既找得到,又保留 Node 的
+  // 参数引号(空格/换行/引号安全,不被 cmd 切——shell 会截断 --text)。.cmd 壳无法无 shell 运行 → 退回 shell
+  // (可能截断含空格的 --text;此时优先把 WELINK_BIN 指向底层 .exe,或 WELINK_CLI_BIN=node + WELINK_CLI_SCRIPT=<js>)。
+  let winBin: { path: string; shell: boolean } | undefined
+  const resolveBinary = (): { path: string; shell: boolean } => {
+    if (winBin) return winBin
+    if (process.platform !== 'win32' || /[\\/]/.test(binary)) {
+      winBin = { path: binary, shell: false }
+      return winBin
+    }
+    try {
+      const out = execSync(`where ${binary}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      const paths = out.split(/\r?\n/).filter(Boolean)
+      const exe = paths.find(p => /\.exe$/i.test(p))
+      if (exe) { winBin = { path: exe, shell: false }; return winBin }
+      const sh = paths.find(p => /\.(cmd|bat)$/i.test(p))
+      if (sh) { winBin = { path: sh, shell: true }; return winBin }
+    } catch { /* not on PATH */ }
+    winBin = { path: binary, shell: false }
+    return winBin
+  }
+
+  /** 调 welink-cli im 子命令。无 shell:Node 参数引号保留空格/换行/引号;全路径解析解决 Windows PATH 不搜的 ENOENT。 */
   async function runIm(...args: string[]): Promise<string> {
-    const { stdout } = await execFileAsync(binary, [...prefixArgs, 'im', ...args], {
+    const { path: file, shell } = resolveBinary()
+    const { stdout } = await execFileAsync(file, [...prefixArgs, 'im', ...args], {
       maxBuffer: 10 * 1024 * 1024,
-      shell: process.platform === 'win32',
+      shell,
     })
     return stdout
+  }
+
+  /** 补 @ 检测:welink 只对 IM 客户端 @-mention UI 置 at;手打 `@<account> ...` 时按正文前缀补 at 并剥前缀,让文本 @ 也能触发会话。 */
+  const enrichAt = (m: IncomingMessage): IncomingMessage => {
+    if (!m.at && m.content) {
+      const re = new RegExp(`^@${account.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`)
+      if (re.test(m.content)) {
+        m.at = true
+        m.content = m.content.replace(re, '').trimStart()
+      }
+    }
+    return m
   }
 
   return {
@@ -165,7 +202,7 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
         const chatInfo = data?.chatInfo ?? []
         return chatInfo
           .filter(m => m.sender !== account)
-          .map(toIncoming)
+          .map(m => enrichAt(toIncoming(m)))
           .reverse() // chatInfo 是 new→old;反转为 old→new 便于 core 按序处理
       } catch (err) {
         console.error('[welink-channel] getNewMessages failed:', err instanceof Error ? err.message : err)
