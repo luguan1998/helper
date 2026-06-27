@@ -14,7 +14,7 @@ import type { Reply, UserContent, OnPartial } from './types.js'
 const AI_INSTALL_CMD = 'npm install -g @anthropic-ai/claude-code@latest'
 
 export function findBinary(customCommand?: string): { binary: string } | { error: string; installCmd: string } {
-  const names = customCommand ? [customCommand] : ['claude', 'openclaude']
+  const names = customCommand ? [customCommand] : ['claude', 'opencc', 'openclaude']
   for (const name of names) {
     try {
       const cmd = process.platform === 'win32' ? `where ${name}` : `which ${name}`
@@ -62,7 +62,7 @@ function buildClaudeArgs(opts: { cwd: string; systemPrompt: string; resumeId?: s
 }
 
 // ── spawn(简化自 ai.ts:124)──
-// model 经 env ANTHROPIC_MODEL 注入(跨 claude/openclaude/GLM 变体最稳,不依赖 --model flag 是否支持)。
+// model 经 env ANTHROPIC_MODEL 注入(跨 claude/opencc/openclaude/GLM 变体最稳,不依赖 --model flag 是否支持)。
 function spawnClaude(opts: {
   cwd: string
   systemPrompt: string

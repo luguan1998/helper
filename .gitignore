@@ -4,3 +4,5 @@ dist/
 .state.json
 # 本地 Claude 会话工作目录(隔离的安全边界)
 .claude-workspace/
+workspace/
+
