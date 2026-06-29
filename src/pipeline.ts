@@ -78,8 +78,8 @@ export async function runScriptFile(ctx: StepCtx, scriptPath: string, opts: Scri
     const direct = opts.interpreter === null
     const cmd = direct ? scriptPath : (opts.interpreter ?? execPath)
     const args = direct ? [] : [scriptPath]
-    // direct(直接跑 .exe):Windows 经 shell 解析扩展名/PATH;否则经 prepareSpawn(.cmd → 全引号 cmd /c,防参数被切)
-    const sp = direct ? { file: cmd, args, options: { shell: process.platform === 'win32' } } : prepareSpawn(cmd, args)
+    // 经 prepareSpawn:Windows .cmd/.bat → 全引号 cmd /c;全路径 .exe → 无 shell(Node 自动引号文件路径,空格安全)
+    const sp = prepareSpawn(cmd, args)
     const child = execFile(sp.file, sp.args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: opts.timeoutMs ?? 300_000,
