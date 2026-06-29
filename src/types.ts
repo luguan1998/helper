@@ -30,6 +30,8 @@ export type UserContent =
 export interface Reply {
   /** 完整 Markdown(待 Renderer 渲染成截图)。 */
   markdown: string
+  /** 本次回复是否被用户 esc 中断(在途 Claude 调用被 interrupt control_request 打断):true 时 markdown 可能空/残缺,调用方应发"已中断"提示而非渲染回复。 */
+  aborted?: boolean
 }
 
 /**

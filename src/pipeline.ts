@@ -20,6 +20,8 @@ export interface StepCtx {
   /** 会话 workspace 子目录路径(text 会话才有;无状态/未注入 sessionLlm 时 undefined)。 */
   workspacePath?: string
   reply?: string
+  /** 上一模型回复是否被用户 esc 中断;modelStep 透传 Reply.aborted。handle() 据此发"已中断"提示而非渲染回复。 */
+  aborted?: boolean
   /** 流式回调:模型生成中每完成一个 thinking 块时触发(Assistant 注入,经 modelStep 透传给 Llm.ask)。 */
   onPartial?: OnPartial
 }
@@ -45,6 +47,7 @@ export function modelStep(name: string): Step {
     if (!model) throw new Error(`model '${name}' not found in registry`)
     const reply = await model.ask(ctx.userId, ctx.content, ctx.onPartial)
     ctx.reply = reply.markdown
+    ctx.aborted = reply.aborted
   }
 }
 

@@ -26,6 +26,8 @@ export interface SessionLlm extends Llm {
   endSession(userId: string): Promise<string | undefined>
   /** 运行期切该用户当前活跃会话的模型(经 set_model control_request,参考 vibe-ide ai.ts);无活跃会话返 false。 */
   setModel(userId: string, model: string): Promise<boolean>
+  /** 中断该用户当前活跃会话的在途生成(经 interrupt control_request);无活跃会话/无在途返 false。供 esc 中断在途命令(命令执行中收 esc → 中断而非退出)。 */
+  interrupt?(userId: string): Promise<boolean>
   /** 该用户活跃会话的 workspace 子目录路径(供会话预处理脚本写产物;无活跃会话/无状态模型返 undefined)。 */
   getWorkspacePath?(userId: string): string | undefined
 }

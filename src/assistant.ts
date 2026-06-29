@@ -77,6 +77,8 @@ export interface AssistantOptions {
   /** 富文本回复的产物形态:'image'(默认,截图 PNG)|'html'(发 HTML 文件)。可由 env BOT_PICTURE_OUTPUT 覆盖。 */
   pictureOutput?: 'image' | 'html'
   pollIntervalMs?: number
+  /** esc-中断 watcher 在途轮询间隔(ms);默认 = pollIntervalMs。 */
+  interruptPollMs?: number
   maxSessions?: number
   cliCommand?: string
   /** 不启动后台循环(测试用)。默认 false=启动。 */
@@ -115,6 +117,8 @@ interface AssistantDeps {
   exitKeywords: string[]
   /** 发送者白名单;空 Set=全部接受。 */
   allowedUsers: Set<string>
+  /** esc-中断 watcher 在途轮询间隔(ms)。 */
+  interruptPollMs: number
   onReceive?: (msg: IncomingMessage) => void
   onReply?: (userId: string, result: ReplyResult) => void
   onError?: (userId: string, err: Error) => void
@@ -218,15 +222,17 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
 
   const renderer = options.renderer ?? (await import('./renderers/puppeteer-renderer.js')).createPuppeteerRenderer()
 
+  const pollMs = options.pollIntervalMs ?? DEFAULT_POLL_MS
   const assistant = new Assistant({
     channel, models, pipeline, renderer, outputPolicy,
     sessionLlm, loadWatermark, saveWatermark,
     exitKeywords: options.exitKeywords ?? DEFAULT_EXIT_KEYWORDS,
     allowedUsers,
+    interruptPollMs: options.interruptPollMs ?? pollMs,
     onReceive: options.onReceive, onReply: options.onReply, onError: options.onError,
   })
   if (options.startLoop !== false) {
-    assistant.startLoop(options.pollIntervalMs ?? DEFAULT_POLL_MS)
+    assistant.startLoop(pollMs)
   }
   return assistant
 }
@@ -263,6 +269,8 @@ class Assistant implements AssistantHandle {
   private readonly saveWatermark: (id: string) => Promise<void>
   /** 当前活跃发送者(每群单活跃:null=无人活跃;仅 sessionLlm 注入时使用)。 */
   private activeUserId: string | null = null
+  /** esc-中断 watcher 消化掉的 esc msgId 集合;tick 主循环据此跳过(避免又当 exit 处理)。 */
+  private readonly consumedEsc = new Set<string>()
   /** 会话级上下文(跨消息保留):预处理 scratch + workspace 路径。@开启 初始化、exit 清理。 */
   private readonly sessionCtx = new Map<string, { scratch: Record<string, unknown>; workspacePath?: string }>()
   private running = false
@@ -342,6 +350,12 @@ class Assistant implements AssistantHandle {
         if (process.env.BOT_DEBUG) {
           console.log(`[assistant] skip id=${msg.id} sender=${msg.user} (不在白名单)`)
         }
+        continue
+      }
+      // esc-中断:被在途 watcher 消化掉的 esc 不再当 exit 处理(中断已完成;此刻主循环到此处时在途 handle 早已返回)。
+      if (this.consumedEsc.has(msg.id)) {
+        this.consumedEsc.delete(msg.id)
+        if (process.env.BOT_DEBUG) console.log(`[assistant] skip consumed esc id=${msg.id} sender=${msg.user}`)
         continue
       }
       this.deps.onReceive?.(msg)
@@ -429,6 +443,59 @@ class Assistant implements AssistantHandle {
     // 非本人且非 @:忽略(不处理、不回复)
   }
 
+  /**
+   * esc-中断 watcher:handle() 在途期间并发轮询,捕获活跃用户发来的 esc → 中断在途 Claude 调用。
+   * 返回 stop 函数(handle 结束即停)。仅在 sessionLlm+活跃用户时启用;否则返回 no-op。
+   *
+   * 背景:tick 主循环串行(await route → await handle → await Claude),esc 到达时主循环正阻塞在在途
+   * route,无法处理。故需此并发 watcher 在在途期间轮询,见活跃用户 esc 即向会话 stdin 发 interrupt
+   * control_request(参考 vibe-ide ai.ts:885-896),CLI 随后回 result(is_aborted)→ 在途 send 以 aborted resolve。
+   *
+   * 仅当 interrupt 真正命中活跃会话(返 true)才把该 esc 记入 consumedEsc → tick 主循环后续跳过它(否则会
+   * 又当 exit 退出会话,与"中断=保持会话"冲突)。返 false(在途步骤尚是无状态 vision、pooled 会话未建)
+   * 不消费、续轮询,待 text 会话建起再中断。主循环此刻阻塞在 await route,无并发 watermark 推进,故无竞争。
+   */
+  private startInterruptWatcher(userId: string): () => void {
+    if (!this.deps.sessionLlm || this.activeUserId !== userId) return () => {}
+    const sessionLlm = this.deps.sessionLlm
+    const channel = this.deps.channel
+    const interval = this.deps.interruptPollMs
+    const exitKeywords = this.deps.exitKeywords
+    let stopped = false
+    const poll = async (): Promise<void> => {
+      while (!stopped) {
+        await sleep(interval)
+        if (stopped) return
+        let batch: IncomingMessage[]
+        try {
+          batch = await channel.getNewMessages()
+        } catch (err) {
+          if (process.env.BOT_DEBUG) console.error('[assistant] interrupt watcher poll failed:', err)
+          continue
+        }
+        for (const m of batch) {
+          if (m.user !== userId) continue
+          if (cmpId(m.id, this.watermark!) <= 0) continue
+          const text = (m.content ?? '').trim().toLowerCase()
+          if (!exitKeywords.some(k => text === k)) continue
+          // 活跃用户在途期间发来 esc → 中断
+          let interrupted = false
+          try {
+            interrupted = !!(await sessionLlm.interrupt?.(userId))
+          } catch (err) {
+            console.error('[assistant] interrupt failed:', err)
+          }
+          if (!interrupted) continue // 无在途活跃会话(可能在 vision 等无状态步骤);不消费,继续轮询
+          this.consumedEsc.add(m.id)
+          if (process.env.BOT_DEBUG) console.log(`[assistant] interrupt sent for id=${m.id} sender=${userId} (in-flight esc)`)
+          return // 已中断,在途 handle 将以 aborted resolve;watcher 退出
+        }
+      }
+    }
+    void poll()
+    return () => { stopped = true }
+  }
+
   private async handle(msg: IncomingMessage): Promise<void> {
     // 流式 thinking:每完成一个 thinking 块先发 `💭 ` 纯文本(绕过 outputPolicy,永不触发 html/picture);
     // 串行排队,最终回复前 drain → 保证"先 think 后结果"。includeThinking=off 时 onPartial 不触发,chain 恒 resolved。
@@ -441,6 +508,8 @@ class Assistant implements AssistantHandle {
           .catch(() => { /* 单条 thinking 发送失败/超时不阻断后续与最终回复 */ })
       }
     }
+    // esc-中断 watcher:仅在活跃用户+对话模型时并发轮询(handle 在途期间主循环阻塞,esc 只能由此捕获);finally 停。
+    const stopWatcher = this.startInterruptWatcher(msg.user)
     try {
       const content = await this.toUserContent(msg)
       const s = this.sessionCtx.get(msg.user)
@@ -457,6 +526,14 @@ class Assistant implements AssistantHandle {
 
       // 等 thinking 消息发完再发最终回复(先 think 后结果)
       await partialChain
+
+      // esc 中断在途命令 → 发"已中断"提示,不退出会话(一次 esc 中断、二次 esc 退出)
+      if (ctx.aborted) {
+        const notice = '🛑已中断,再次发送 esc 可退出会话。'
+        await this.deps.channel.sendText(msg.user, notice)
+        this.deps.onReply?.(msg.user, { mode: 'text', reply: notice })
+        return
+      }
 
       const mode = this.deps.outputPolicy(reply)
       if (mode === 'picture') {
@@ -482,6 +559,8 @@ class Assistant implements AssistantHandle {
         /* sendText 自身也失败时,无能为力,记日志即可 */
       }
       throw err
+    } finally {
+      stopWatcher()
     }
   }
 

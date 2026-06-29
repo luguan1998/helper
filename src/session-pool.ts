@@ -14,6 +14,8 @@ export interface Session {
   kill(): void
   /** 运行期切模型(经 set_model control_request);无状态会话可不实现。 */
   setModel?(model: string): void
+  /** 中断当前在途 send(向 CLI stdin 发 interrupt control_request,参考 vibe-ide ai.ts);无在途/不支持则 no-op。 */
+  interrupt?(): void
   /** Claude 分配的会话 ID(用于持久化 + 下次 --resume)。 */
   claudeSessionId?: string
   /** 该会话拥有的 workspace 子目录路径(供会话预处理脚本写产物;无状态会话 undefined)。 */
@@ -103,6 +105,18 @@ export class SessionPool {
     const session = this.live.get(userId)
     if (!session?.setModel) return false
     session.setModel(model)
+    return true
+  }
+
+  /**
+   * 中断该用户当前活跃会话的在途 send(经 interrupt control_request,参考 vibe-ide ai.ts:885-896)。
+   * 无活跃会话或会话不支持 interrupt 时返 false;有则委托并返 true。供 Assistant 的 esc-中断在途命令用
+   * (命令执行中收 esc → 中断而非退出)。无活跃 pooled 会话(如在 vision 等无状态步骤)返 false,调用方据此不消费 esc、续轮询。
+   */
+  interrupt(userId: string): boolean {
+    const session = this.live.get(userId)
+    if (!session?.interrupt) return false
+    session.interrupt()
     return true
   }
 

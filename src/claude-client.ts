@@ -153,6 +153,8 @@ export class ClaudeSession implements Session {
   private pendingText = ''
   /** 本轮流式回调(thinking 块完成时触发);send 注入,result/failPending 清空防 pooled 复用串用户。 */
   private onPartial?: OnPartial
+  /** 用户是否已请求中断在途 send(esc → interrupt());result 据此标记 aborted,随后清零;send 起始也清零防上一轮残留污染本轮。 */
+  private interruptRequested = false
 
   private constructor(proc: ChildProcess, ownedWorkspacePath: string | undefined, includeThinking: boolean) {
     this.proc = proc
@@ -181,6 +183,7 @@ export class ClaudeSession implements Session {
       this.pendingResolve = resolve
       this.pendingReject = reject
       this.pendingText = ''
+      this.interruptRequested = false
       this.onPartial = onPartial
       this.proc.stdin?.write(ndjson)
     })
@@ -200,6 +203,21 @@ export class ClaudeSession implements Session {
       type: 'control_request',
       request_id: `set-model-${randomUUID()}`,
       request: { subtype: 'set_model', model },
+    }) + '\n'
+    this.proc.stdin?.write(ndjson)
+  }
+
+  /**
+   * 中断当前在途 send(参考 vibe-ide src/main/ai.ts:885-896):向 stdin 写一行 interrupt control_request,
+   * 标记 interruptRequested → 在途 send 收到 result(is_aborted)后以 aborted 回复 resolve。fire-and-forget。
+   * 无在途 send 时 control_request 回执走 onMessage default 分支被忽略(interruptRequested 由下次 send 清零),无副作用。
+   */
+  interrupt(): void {
+    this.interruptRequested = true
+    const ndjson = JSON.stringify({
+      type: 'control_request',
+      request_id: `interrupt-${randomUUID()}`,
+      request: { subtype: 'interrupt' },
     }) + '\n'
     this.proc.stdin?.write(ndjson)
   }
@@ -298,8 +316,9 @@ export class ClaudeSession implements Session {
         break
       }
       case 'result': {
-        const reply: Reply = { markdown: this.pendingText }
+        const reply: Reply = { markdown: this.pendingText, aborted: !!msg.is_aborted || this.interruptRequested }
         this.pendingText = ''
+        this.interruptRequested = false
         this.onPartial = undefined
         this.pendingResolve?.(reply)
         this.pendingResolve = undefined
@@ -413,6 +432,9 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
     },
     async setModel(userId: string, model: string): Promise<boolean> {
       return pool.setModel(userId, model)
+    },
+    async interrupt(userId: string): Promise<boolean> {
+      return pool.interrupt(userId)
     },
     getWorkspacePath(userId: string): string | undefined {
       return pool.getWorkspacePath(userId)
