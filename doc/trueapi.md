@@ -1,17 +1,62 @@
 这是内部cli实际接口cli 命令 如何设计远程agent连接操作 实现内部cli对话栏能操作claude code
 # 接受命令从群组
-welink-cli im query-history-message --group-id "group001" --query-count 20
+welink-cli im query-history-message --group-id "979824523237052806" --query-count 20
 
 # 发送消息给群组
-welink-cli im send-to-group --group-id "group001" --text "Group message"
+welink-cli im send-to-group --group-id "979824523237052806" --text "Group message"
 
 # 发送图片给群组
-welink-cli im send-to-group --group-id "group001" --image "./photo.png"
+welink-cli im send-to-group --group-id "979824523237052806" --image "./photo.png"
 
 # 发送文件给群组
-welink-cli im send-to-group --group-id "group001" --file "./document.pdf"
+welink-cli im send-to-group --group-id "979824523237052806" --file "./document.pdf"
 
-
+```bash
+PS E:\skill\helper-master> welink-cli im send-to-group --group-id "979824523237052806" --image "./aaa.png"
+Getting user info...
+Uploading file...
+Creating share link...
+Sending message...
+{
+  "respData": {
+    "msgIds": [
+      89135802280760068
+    ],
+    "serverSendTime": 1782716045615
+  },
+  "resultCode": "0",
+  "resultContext": "Operate Success",
+  "sno": null
+}
+PS E:\skill\helper-master> welink-cli im send-to-group --group-id "979824523237052806" --file "./CLAUDE.md"
+Getting user info...
+Uploading file...
+Creating share link...
+Sending message...
+{
+  "respData": {
+    "msgIds": [
+      89135803457442313
+    ],
+    "serverSendTime": 1782716069149
+  },
+  "resultCode": "0",
+  "resultContext": "Operate Success",
+  "sno": null
+}
+PS E:\skill\helper-master> welink-cli im send-to-group --group-id "979824523237052806" --text "Group message"
+{
+  "respData": {
+    "msgIds": [
+      89135807002479166
+    ],
+    "serverSendTime": 1782716140049
+  },
+  "resultCode": "0",
+  "resultContext": "Operate Success",
+  "sno": null
+}
+```
 
 本文档完整记录 `welink-cli` 各命令的 stdout JSON 返回格式，独立于任何 bot 实现。
 所有示例中的账号、ID 等均已脱敏处理。

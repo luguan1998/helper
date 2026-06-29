@@ -47,9 +47,9 @@ interface HistoryRespData {
 
 /**
  * 解析 stdout 为信封,校验 resultCode,返回 respData。
- * 关键:msgId/maxMsgId/minMsgId 是 >2^53 的大整数,JSON.parse 当 number 会丢精度 →
- * 先正则把这几个字段的数字字面量加引号包成 string 再 parse,全程以 string 携带、用 BigInt 比较。
- * (字段若本身已带引号则正则不匹配,原样保留,同样安全。)
+ * 关键:msgId/maxMsgId/minMsgId 及 send 响应的 msgIds[] 元素都是 >2^53 的大整数(真实 ~8.9e16),
+ * JSON.parse 当 number 会丢精度 → 先正则把这些字段的裸数字字面量加引号包成 string 再 parse,全程以
+ * string 携带、用 BigInt 比较。(字段若本身已带引号则正则不匹配,原样保留,同样安全。)
  */
 function parseEnvelope<T = unknown>(raw: string): T {
   const trimmed = raw.trim()
@@ -58,6 +58,9 @@ function parseEnvelope<T = unknown>(raw: string): T {
     .replace(/"msgId"\s*:\s*(\d+)/g, '"msgId":"$1"')
     .replace(/"maxMsgId"\s*:\s*(\d+)/g, '"maxMsgId":"$1"')
     .replace(/"minMsgId"\s*:\s*(\d+)/g, '"minMsgId":"$1"')
+    // send-to-group 响应 respData.msgIds 是大整数数组(真实:[89135807002479166]);把裸数字元素引号化保精度。
+    // 真实每条 send 返回单元素数组,故匹配 [ <裸数字> ];空数组/已带引号不匹配(原样保留,sim 不用此字段)。
+    .replace(/"msgIds"\s*:\s*\[\s*(\d+)\s*\]/g, '"msgIds":["$1"]')
   const parsed = JSON.parse(safe) as Envelope<T>
   if (parsed.resultCode !== '0') {
     throw new Error(`welink-cli failed: ${parsed.resultCode} ${parsed.resultContext ?? ''}`.trim())
@@ -66,19 +69,28 @@ function parseEnvelope<T = unknown>(raw: string): T {
 }
 
 /**
- * 从 send-to-group 响应的 respData 取新消息的 msgId(用于排除自身回环消息)。
- * 真实 welink 的 send respData 未文档化;sim 返回 { msgId }。parseEnvelope 已把数字
- * msgId 引号化成 string,故此处直接取值。兼容字段名 msgId/messageId/messageID/id;
- * 任一命中即返回;响应无 msgId → undefined(调用方记警告,回退到 account 过滤)。
+ * 从 send-to-group 响应的 respData 取新消息的 msgId 列表(用于排除自身回环消息)。
+ * 真实 welink:respData.msgIds(大整数数组,通常 1 个,parseEnvelope 已引号化成 string[]);
+ * sim:respData.msgId(单值)。优先取 msgIds;无则回退 msgId/messageId/messageID/id。
+ * 返回所有命中(去空);全空 → 空数组(调用方记警告,回退到 account 过滤)。
  */
-function extractSentMsgId(respData: unknown): string | undefined {
-  if (!respData || typeof respData !== 'object') return undefined
+function extractSentMsgIds(respData: unknown): string[] {
+  if (!respData || typeof respData !== 'object') return []
   const r = respData as Record<string, unknown>
-  for (const k of ['msgId', 'messageId', 'messageID', 'id']) {
-    const v = r[k]
-    if (v !== null && v !== undefined && v !== '') return String(v)
+  const out: string[] = []
+  const push = (v: unknown): void => {
+    if (v !== null && v !== undefined && v !== '') out.push(String(v))
   }
-  return undefined
+  const ids = r.msgIds
+  if (Array.isArray(ids)) ids.forEach(push)
+  else if (ids !== undefined) push(ids) // 防御:msgIds 非数组但给了单值
+  if (out.length === 0) {
+    for (const k of ['msgId', 'messageId', 'messageID', 'id']) {
+      const v = r[k]
+      if (v !== null && v !== undefined && v !== '') { out.push(String(v)); break }
+    }
+  }
+  return out
 }
 
 /** 从 IMAGESPAN_MSG/FILE_MSG 的 content 取 `/:um_begin{` 后到首个 `|` 的 URL(段 0)。 */
@@ -167,7 +179,7 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
 
   /**
    * 记住本通道经 CLI 发出的消息 msgId,getNewMessages 时排除(防回环:bot 自己的回复被轮询捞回
-   * 喂给 Claude → 无限循环)。send-to-group 成功响应的 respData.msgId 加入此集合。
+   * 喂给 Claude → 无限循环)。send-to-group 成功响应的 respData.msgIds(真实,大整数数组)加入此集合。
    * 只需覆盖"最近 queryCount 条"窗口内的回环消息;msgId 单调递增,最早发出的最不可能再出现在最近
    * 批次,故 FIFO 淘汰。上限远大于 queryCount,余量充足。
    */
@@ -182,13 +194,13 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
     }
   }
 
-  /** 发到群并记录新消息 msgId(防回环)。respData 无 msgId 时记警告(回退到 account 过滤)。 */
+  /** 发到群并记录新消息 msgId(s)(防回环)。respData 无 msgId 时记警告(回退到 account 过滤)。 */
   async function sendAndRemember(...args: string[]): Promise<void> {
     const stdout = await runIm('send-to-group', ...args)
     const respData = parseEnvelope(stdout) // 校验 resultCode(失败抛 → Assistant 降级致歉)
-    const id = extractSentMsgId(respData)
-    if (id) rememberSent(id)
-    else console.warn('[welink-channel] send-to-group 响应未含 msgId,无法按发送排除自身回环消息;请确认 WELINK_ACCOUNT 已设为 bot 登录账号作为回退过滤')
+    const ids = extractSentMsgIds(respData)
+    if (ids.length) ids.forEach(rememberSent)
+    else console.warn('[welink-channel] send-to-group 响应未含 msgId(s),无法按发送排除自身回环消息;请确认 WELINK_ACCOUNT 已设为 bot 登录账号作为回退过滤')
   }
 
   /** 补 @ 检测:welink 只对 IM 客户端 @-mention UI 置 at;手打 `@<account> ...` 时按正文前缀补 at 并剥前缀,让文本 @ 也能触发会话。 */
