@@ -44,21 +44,26 @@ export function sanitizeEnvForCli(env: NodeJS.ProcessEnv = process.env): NodeJS.
 // ── CLI 参数(简化自 ai.ts:95)──
 // 保留 stream-json + bypassPermissions;去掉 --permission-prompt-tool stdio(bypass 已无需提示)
 // 与 --include-partial-messages(我们只要最终完整文本,不要增量)。
-function buildClaudeArgs(opts: { cwd: string; systemPrompt: string; resumeId?: string }): string[] {
+function buildClaudeArgs(opts: { cwd: string; systemPrompt: string; resumeId?: string; addDirs?: string[] }): string[] {
   const platformDesc = process.platform === 'win32'
     ? 'Windows(用反斜杠路径如 C:\\Users\\...)'
     : process.platform === 'darwin'
       ? 'macOS(用 /Users/... 路径)'
       : 'Linux(用 /home/... 路径)'
+  // 额外可访问目录(env BOT_ADD_DIRS):经 --add-dir 注入,Claude 可跨 cwd 之外这些目录用文件工具。
+  // 重复 `--add-dir <dir>` 而非 `--add-dir a b`:对"变长(variadic)"与"单值"两种解析都成立,跨 claude/opencc 变体最稳。
+  const addDirs = opts.addDirs ?? []
+  const extraDirLine = addDirs.length > 0 ? `;额外可访问目录:${addDirs.join(', ')}` : ''
   const args = [
     '-p',
     '--output-format', 'stream-json',
     '--input-format', 'stream-json',
     '--verbose',
     '--permission-mode', 'bypassPermissions',
-    '--append-system-prompt', `${opts.systemPrompt}\n(运行于 ${platformDesc};工作目录:${opts.cwd})`,
+    '--append-system-prompt', `${opts.systemPrompt}\n(运行于 ${platformDesc};工作目录:${opts.cwd}${extraDirLine})`,
   ]
   if (opts.resumeId) args.push('--resume', opts.resumeId)
+  for (const d of addDirs) args.push('--add-dir', d)
   return args
 }
 
@@ -70,6 +75,7 @@ function spawnClaude(opts: {
   resumeId?: string
   model?: string
   cliCommand?: string
+  addDirs?: string[]
 }): ChildProcess {
   const resolved = findBinary(opts.cliCommand)
   if ('error' in resolved) throw new Error(resolved.error)
@@ -104,12 +110,20 @@ export interface ClaudeSessionOpts {
   ownedWorkspacePath?: string
   /** 是否流式输出 thinking 块(env BOT_INCLUDE_THINKING);开启则每完成一个 thinking 块经 onPartial 回调发出,不拼进最终回复。 */
   includeThinking?: boolean
+  /** 额外可访问目录(env BOT_ADD_DIRS,逗号分隔);经 --add-dir 注入,让 Claude 跨 cwd 之外这些目录读写。 */
+  addDirs?: string[]
 }
 
 /** 解析布尔 env:1/true/yes/on(大小写不敏感)=true,其余(含未设/0/false/no/off)=false。 */
 function parseBoolEnv(v: string | undefined): boolean {
   if (!v) return false
   return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
+}
+
+/** 解析 env BOT_ADD_DIRS:逗号分隔的额外可访问目录(空白忽略;未设/空=[])。Windows 反斜杠路径直接可用。 */
+function parseAddDirs(v: string | undefined): string[] {
+  if (!v) return []
+  return v.split(',').map(s => s.trim()).filter(Boolean)
 }
 
 export class ClaudeSession implements Session {
@@ -317,10 +331,12 @@ export interface ClaudeCliLlmOptions {
   groupId: string
   /** 是否流式输出 thinking 块;不设则取 env BOT_INCLUDE_THINKING(1/true/yes/on)。 */
   includeThinking?: boolean
+  /** 额外可访问目录(逗号分隔);不设则取 env BOT_ADD_DIRS。每会话经 --add-dir 注入,扩 Claude 文件工具可达范围。 */
+  addDirs?: string[]
 }
 
 /** 无状态 Llm:每次 ask 新建会话、ask 完即 kill(userId 被忽略,无多轮续接)。识图等用。 */
-function createStatelessLlm(opts: ClaudeCliLlmOptions, includeThinking: boolean): Llm {
+function createStatelessLlm(opts: ClaudeCliLlmOptions, includeThinking: boolean, addDirs: string[]): Llm {
   return {
     async ask(_userId: string, content: UserContent, onPartial?: OnPartial): Promise<Reply> {
       const session = await ClaudeSession.spawn({
@@ -329,6 +345,7 @@ function createStatelessLlm(opts: ClaudeCliLlmOptions, includeThinking: boolean)
         model: opts.model,
         cliCommand: opts.cliCommand,
         includeThinking,
+        addDirs,
       })
       try {
         return await session.send(content, onPartial)
@@ -343,8 +360,13 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
   // base 工作目录:无状态识图共用此目录,也作 per-session 子目录的父目录
   await ensureDir(options.cwd)
   const includeThinking = options.includeThinking ?? parseBoolEnv(process.env.BOT_INCLUDE_THINKING)
+  // 额外可访问目录(env BOT_ADD_DIRS,逗号分隔):每会话经 --add-dir 注入,让 Claude 跨 cwd 之外这些目录读写。
+  // 共享固定目录(如日志/项目目录),跨所有会话/群生效;ensureDir 兜底缺失(--add-dir 要求目录存在,否则 Claude 报错)。
+  const addDirs = options.addDirs ?? parseAddDirs(process.env.BOT_ADD_DIRS)
+  for (const d of addDirs) await ensureDir(d)
+  if (addDirs.length > 0) console.log(`[claude] 额外可访问目录(--add-dir):${addDirs.join(', ')}`)
   if (options.pooled === false) {
-    return createStatelessLlm(options, includeThinking)
+    return createStatelessLlm(options, includeThinking, addDirs)
   }
   const pool = new SessionPool({
     cwd: options.cwd,
@@ -361,6 +383,7 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
         model: options.model,
         cliCommand: options.cliCommand,
         includeThinking,
+        addDirs,
       })
     },
     // 闭包绑定 groupId:每群独立 state 文件,消除跨群 userId 串号(SessionPool 本身仍 userId 键,因每群一个 pool 实例)

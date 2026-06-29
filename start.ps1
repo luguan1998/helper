@@ -12,6 +12,7 @@ $IncludeThinking = "0"        # 1 = stream thinking blocks before final reply; 0
 $QueryCount      = 5         # messages fetched per poll
 $PollIntervalMs  = 5000       # poll interval in ms
 $WELINK_ACCOUNT  = "bot01"    # bot's welink login account (self-msg filter; @ this name) - set to your REAL account
+$AddDirs         = ""        # extra dirs Claude can access per conversation via --add-dir (comma-sep, e.g. "D:\logs,D:\proj"); empty = none
 # Optional (uncomment to override):
 # $WELINK_BIN         = "welink-cli"
 # $CHROMIUM_PATH      = "C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -28,10 +29,12 @@ $env:WELINK_ACCOUNT       = $WELINK_ACCOUNT
 $env:BOT_INCLUDE_THINKING = $IncludeThinking
 $env:WELINK_QUERY_COUNT   = $QueryCount
 $env:BOT_POLL_INTERVAL_MS = $PollIntervalMs
+if ($AddDirs)            { $env:BOT_ADD_DIRS       = $AddDirs }
 if ($WELINK_BIN)         { $env:WELINK_BIN         = $WELINK_BIN }
 if ($CHROMIUM_PATH)      { $env:CHROMIUM_PATH      = $CHROMIUM_PATH }
 if ($BOT_STATE_DIR)      { $env:BOT_STATE_DIR      = $BOT_STATE_DIR }
 if ($BOT_PICTURE_OUTPUT) { $env:BOT_PICTURE_OUTPUT = $BOT_PICTURE_OUTPUT }
 
 Write-Host ("[start] account={0} groups={1} think={2} query={3} poll={4}ms" -f $WELINK_ACCOUNT,$GroupIds,$IncludeThinking,$QueryCount,$PollIntervalMs) -ForegroundColor Cyan
+if ($AddDirs) { Write-Host ("[start] add-dirs={0}" -f $AddDirs) -ForegroundColor Cyan }
 npm run dev
