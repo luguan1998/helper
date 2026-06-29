@@ -43,6 +43,12 @@ function parseModelAlias(text: string): { alias: string; rest: string } | null {
   return null
 }
 
+/** 解析逗号分隔列表(空白忽略;未设/空=[])。用于 BOT_ALLOWED_USERS 等发送者白名单。 */
+function parseList(v: string | undefined): string[] {
+  if (!v) return []
+  return v.split(',').map(s => s.trim()).filter(Boolean)
+}
+
 export interface ReplyResult {
   mode: OutputMode
   reply: string
@@ -85,6 +91,8 @@ export interface AssistantOptions {
   saveWatermark?: (msgId: string) => Promise<void>
   /** 退出关键词(默认 esc/quit/exit);退出 = 正文 trim+lowercase 后精确等于其一。 */
   exitKeywords?: string[]
+  /** 发送者白名单(账号);非空时只处理列表内 sender 的消息,其余忽略(水位仍推进)。默认空=全部接受。可由 env BOT_ALLOWED_USERS 提供。 */
+  allowedUsers?: string[]
   onReceive?: (msg: IncomingMessage) => void
   onReply?: (userId: string, result: ReplyResult) => void
   onError?: (userId: string, err: Error) => void
@@ -105,6 +113,8 @@ interface AssistantDeps {
   loadWatermark?: () => Promise<string | undefined>
   saveWatermark?: (msgId: string) => Promise<void>
   exitKeywords: string[]
+  /** 发送者白名单;空 Set=全部接受。 */
+  allowedUsers: Set<string>
   onReceive?: (msg: IncomingMessage) => void
   onReply?: (userId: string, result: ReplyResult) => void
   onError?: (userId: string, err: Error) => void
@@ -170,6 +180,8 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
 
   // 本助手监控的群 ID:零配置路径(buildModels / welink 通道 / 水位)必填;注入 channel+models 的测试路径可不提供。
   const groupId = options.groupId ?? process.env.WELINK_GROUP_ID
+  // 发送者白名单(env BOT_ALLOWED_USERS,逗号分隔);空=全部接受(默认)。在 tick 去重后、route 前过滤。
+  const allowedUsers = new Set(options.allowedUsers ?? parseList(process.env.BOT_ALLOWED_USERS))
 
   let models: Models
   let pipeline: Pipeline
@@ -210,6 +222,7 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
     channel, models, pipeline, renderer, outputPolicy,
     sessionLlm, loadWatermark, saveWatermark,
     exitKeywords: options.exitKeywords ?? DEFAULT_EXIT_KEYWORDS,
+    allowedUsers,
     onReceive: options.onReceive, onReply: options.onReply, onError: options.onError,
   })
   if (options.startLoop !== false) {
@@ -323,6 +336,14 @@ class Assistant implements AssistantHandle {
       // ★at-most-once:先把水位推进到本条 msgId 并落盘,再处理 → 崩溃至多重丢这一条,绝不重复处理。
       this.watermark = msg.id
       try { await this.saveWatermark(msg.id) } catch (err) { console.error('[assistant] saveWatermark failed:', err) }
+      // 发送者白名单(BOT_ALLOWED_USERS):非空时只接受列表内 sender,其余跳过(不处理/不回复);
+      // 水位已推进故不会重复拉取。空=全部接受(默认)。
+      if (this.deps.allowedUsers.size > 0 && !this.deps.allowedUsers.has(msg.user)) {
+        if (process.env.BOT_DEBUG) {
+          console.log(`[assistant] skip id=${msg.id} sender=${msg.user} (不在白名单)`)
+        }
+        continue
+      }
       this.deps.onReceive?.(msg)
       if (process.env.BOT_DEBUG) {
         console.log(`[assistant] recv id=${msg.id} sender=${msg.user} at=${msg.at ?? false} type=${msg.type} ${(msg.content ?? '').slice(0, 60)}`)
