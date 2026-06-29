@@ -51,9 +51,15 @@ function buildClaudeArgs(opts: { cwd: string; systemPrompt: string; resumeId?: s
       ? 'macOS(用 /Users/... 路径)'
       : 'Linux(用 /home/... 路径)'
   // 额外可访问目录(env BOT_ADD_DIRS):经 --add-dir 注入,Claude 可跨 cwd 之外这些目录用文件工具。
-  // 重复 `--add-dir <dir>` 而非 `--add-dir a b`:对"变长(variadic)"与"单值"两种解析都成立,跨 claude/opencc 变体最稳。
+  // 重复 `--add-dir <dir>` 而非 `--add-dir a b`:对"变长(variadic)"与"单值"两种解析都成立,跨 claude/opencc 变体最稳
+  // (实测 2.1.185:两种形式都把多目录注册给 Glob、非 last-wins;且 bot 用 stdin 送 prompt 无位置参数,无"变长吞 prompt"风险)。
+  // ⚠ 实测(2.1.185,GLM 后端):--add-dir 把目录注册给 Glob/Grep 工具(显式 path 可搜到),但 Glob/Grep 默认 `**` 范围
+  // **仅 cwd、不含 added dir**(与真 Claude Code 不同)。故须在 system prompt 明确告知 Claude:搜这些目录要显式传 path,
+  // 否则它用默认 `**` 搜不到 → add-dir 形同未生效。
   const addDirs = opts.addDirs ?? []
-  const extraDirLine = addDirs.length > 0 ? `;额外可访问目录:${addDirs.join(', ')}` : ''
+  const extraDirLine = addDirs.length > 0
+    ? `;额外可访问目录:${addDirs.join(', ')}(注意:Glob/Grep 默认仅搜当前工作目录,搜索上述额外目录时必须在工具的 path 参数显式传入对应目录路径)`
+    : ''
   const args = [
     '-p',
     '--output-format', 'stream-json',
