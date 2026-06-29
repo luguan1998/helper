@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Llm, SessionLlm } from './llm.js'
 import { SessionPool, type Session } from './session-pool.js'
+import { prepareSpawn } from './win-spawn.js'
 import { loadSessionId, saveSessionId } from './state.js'
 import { ensureDir, createSessionWorkspace, removeDirIfEmpty } from './workspace.js'
 import type { Reply, UserContent, OnPartial } from './types.js'
@@ -75,11 +76,12 @@ function spawnClaude(opts: {
   const args = buildClaudeArgs(opts)
   const env = sanitizeEnvForCli()
   if (opts.model) env.ANTHROPIC_MODEL = opts.model
-  return spawn(resolved.binary, args, {
+  const p = prepareSpawn(resolved.binary, args)
+  return spawn(p.file, p.args, {
     cwd: opts.cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
-    shell: process.platform === 'win32', // Windows 上 .cmd 需要 shell 解析
+    ...p.options, // Windows .cmd → cmd /d /s /c <全引号命令行>(防 --append-system-prompt 被空格切);.exe → 无 shell
   })
 }
 

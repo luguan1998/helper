@@ -3,6 +3,7 @@
 // scriptFileStep 调外部脚本(stdin JSON → stdout JSON,merge session/content),会话预处理等确定性场景用。
 // 分支逻辑写在 script 步骤内(如"若是图片才调 vision"、"若未预处理且带日志才跑"),不引入 DAG。
 import { execFile } from 'node:child_process'
+import { prepareSpawn } from './win-spawn.js'
 import { execPath } from 'node:process'
 import type { Models } from './llm.js'
 import type { UserContent, OnPartial } from './types.js'
@@ -77,10 +78,12 @@ export async function runScriptFile(ctx: StepCtx, scriptPath: string, opts: Scri
     const direct = opts.interpreter === null
     const cmd = direct ? scriptPath : (opts.interpreter ?? execPath)
     const args = direct ? [] : [scriptPath]
-    const child = execFile(cmd, args, {
+    // direct(直接跑 .exe):Windows 经 shell 解析扩展名/PATH;否则经 prepareSpawn(.cmd → 全引号 cmd /c,防参数被切)
+    const sp = direct ? { file: cmd, args, options: { shell: process.platform === 'win32' } } : prepareSpawn(cmd, args)
+    const child = execFile(sp.file, sp.args, {
       maxBuffer: 50 * 1024 * 1024,
       timeout: opts.timeoutMs ?? 300_000,
-      shell: direct && process.platform === 'win32', // 直接跑 .exe 时 Windows 经 shell 解析扩展名/PATH
+      ...sp.options,
     }, (err, out) => {
       if (err) reject(err)
       else resolve(out)

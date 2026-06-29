@@ -9,8 +9,8 @@ Prereqs: claude/opencc on PATH; chromium available (set CHROMIUM_PATH);
 # --- CONFIG (edit as needed) ---
 $GroupIds        = "100001,100002"    # group IDs to monitor, comma-separated
 $IncludeThinking = "0"        # 1 = stream thinking blocks before final reply; 0 = off
-$QueryCount      = 20         # messages fetched per poll
-$PollIntervalMs  = 1000       # poll interval in ms
+$QueryCount      = 5         # messages fetched per poll
+$PollIntervalMs  = 5000       # poll interval in ms
 $WELINK_ACCOUNT  = "bot01"    # bot's welink login account (self-msg filter; @ this name) - set to your REAL account
 # Optional (uncomment to override):
 # $WELINK_BIN         = "welink-cli"

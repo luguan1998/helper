@@ -2,10 +2,11 @@
 // 真实 welink-cli 输出格式有变时,只需改此文件(locality 来自接缝)。
 // 群组导向:构造时绑定 groupId,所有 send 固定发到该群;sendText/sendPicture 的 userId
 // 形参仅为兼容端口签名(群模型下被忽略——回复一律发到构造时的群),核心仍传 sender 以备日志/回调。
-// 用 execFile 传参数组(structured args,Node 自动给含空格/换行/引号的参数加引号);Windows 上
-// `where` 解析全路径后无 shell spawn(既解决 PATH 不搜的 ENOENT,又避免 shell 切参数——shell 会按空格/换行截断 --text)。
-import { execFile, execSync } from 'node:child_process'
+// 用 execFile 传参数组;Windows 下经 prepareSpawn(../win-spawn.ts):`where` 解析全路径、.cmd 走
+// `cmd /d /s /c <全引号命令行>`——既解决 PATH 不搜的 ENOENT,又避免 shell 按空格/换行截断 --text。
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { prepareSpawn } from '../win-spawn.js'
 import type { Channel } from './channel.js'
 import type { IncomingMessage } from '../types.js'
 
@@ -145,36 +146,10 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
 
   const prefixArgs = script ? [script] : []
 
-  // Windows: Node 的 spawn(CreateProcess 用 lpApplicationName)不搜 PATH → 裸名 `welink-cli` ENOENT
-  // (sim 用 process.execPath 全路径绕过)。`where` 解析全路径后无 shell spawn:既找得到,又保留 Node 的
-  // 参数引号(空格/换行/引号安全,不被 cmd 切——shell 会截断 --text)。.cmd 壳无法无 shell 运行 → 退回 shell
-  // (可能截断含空格的 --text;此时优先把 WELINK_BIN 指向底层 .exe,或 WELINK_CLI_BIN=node + WELINK_CLI_SCRIPT=<js>)。
-  let winBin: { path: string; shell: boolean } | undefined
-  const resolveBinary = (): { path: string; shell: boolean } => {
-    if (winBin) return winBin
-    if (process.platform !== 'win32' || /[\\/]/.test(binary)) {
-      winBin = { path: binary, shell: false }
-      return winBin
-    }
-    try {
-      const out = execSync(`where ${binary}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-      const paths = out.split(/\r?\n/).filter(Boolean)
-      const exe = paths.find(p => /\.exe$/i.test(p))
-      if (exe) { winBin = { path: exe, shell: false }; return winBin }
-      const sh = paths.find(p => /\.(cmd|bat)$/i.test(p))
-      if (sh) { winBin = { path: sh, shell: true }; return winBin }
-    } catch { /* not on PATH */ }
-    winBin = { path: binary, shell: false }
-    return winBin
-  }
-
-  /** 调 welink-cli im 子命令。无 shell:Node 参数引号保留空格/换行/引号;全路径解析解决 Windows PATH 不搜的 ENOENT。 */
+  /** 调 welink-cli im 子命令。经 prepareSpawn:.cmd → `cmd /d /s /c <全引号命令行>`(防 --text 被空格/换行切),.exe/全路径 → 无 shell(Node MSVC 引号,空格/换行/引号全安全)。 */
   async function runIm(...args: string[]): Promise<string> {
-    const { path: file, shell } = resolveBinary()
-    const { stdout } = await execFileAsync(file, [...prefixArgs, 'im', ...args], {
-      maxBuffer: 10 * 1024 * 1024,
-      shell,
-    })
+    const p = prepareSpawn(binary, [...prefixArgs, 'im', ...args])
+    const { stdout } = await execFileAsync(p.file, p.args, { maxBuffer: 10 * 1024 * 1024, ...p.options })
     return stdout
   }
 
