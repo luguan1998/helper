@@ -225,13 +225,37 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
     }
   }
 
-  /** 发到群并记录新消息 msgId(s)(防回环)。respData 无 msgId 时记警告(回退到 account 过滤)。 */
+  /**
+   * 发到群并记录新消息 msgId(s)(防回环)。不留缝:先正则从原始 stdout 尽力抓 msgIds(即便响应畸形、
+   * parseEnvelope 抛错也不丢追踪),再 parseEnvelope 结构化取(覆盖 sim 的单值 msgId 等)。
+   * ① 抓到 msgIds → 视为发送成功(即便 parse 失败也不致歉,回环已防);② 未抓到且 parse 失败 → 抛错致歉
+   *   并提示设 WELINK_ACCOUNT 兜底;③ parse 成功但无 msgId(s) → 仅警告(同 account 兜底)。
+   * 不用 sender 过滤兜底回环(会误伤与 bot 同账号的操作者 IM 发言);仅靠 msgId 追踪,同/异账号皆安全。
+   * send 响应无用户消息 content,正则不会误匹配。
+   */
   async function sendAndRemember(...args: string[]): Promise<void> {
     const stdout = await runIm('send-to-group', ...args)
-    const respData = parseEnvelope(stdout) // 校验 resultCode(失败抛 → Assistant 降级致歉)
-    const ids = extractSentMsgIds(respData)
-    if (ids.length) ids.forEach(rememberSent)
-    else console.warn('[welink-channel] send-to-group 响应未含 msgId(s),无法按发送排除自身回环消息;请确认 WELINK_ACCOUNT 已设为 bot 登录账号作为回退过滤')
+    // 尽力正则抓 msgIds(裸数字/已引号、单/多元素通用):parseEnvelope 失败时仍能追踪 → 不留缝
+    let tracked = false
+    for (const m of stdout.matchAll(/"msgIds"\s*:\s*\[([^\]]*)\]/g)) {
+      for (const n of m[1].matchAll(/\d+/g)) { rememberSent(n[0]); tracked = true }
+    }
+    try {
+      const respData = parseEnvelope(stdout) // 校验 resultCode(失败抛)
+      const ids = extractSentMsgIds(respData) // 结构化取(sim 单值 msgId / 真实 msgIds / 别名字段)
+      if (ids.length) { ids.forEach(rememberSent); tracked = true }
+    } catch (err) {
+      if (tracked) {
+        // 已抓到 msgIds → send 实际成功(响应畸形而已),吞错不致歉,回环已防
+        console.warn('[welink-channel] send-to-group 响应畸形但已抓到 msgIds 并追踪(不致歉):', err instanceof Error ? err.message : err)
+        return
+      }
+      console.warn('[welink-channel] send-to-group 响应解析失败且无 msgIds,无法排除自身回环;请确认 WELINK_ACCOUNT 已设为 bot 登录账号作为回退过滤:', err instanceof Error ? err.message : err)
+      throw err // 未追踪 → 抛错致歉;该 send 的回环靠 WELINK_ACCOUNT sender 过滤兜底(若已设)
+    }
+    if (!tracked) {
+      console.warn('[welink-channel] send-to-group 响应未含 msgId(s),无法按发送排除自身回环消息;请确认 WELINK_ACCOUNT 已设为 bot 登录账号作为回退过滤')
+    }
   }
 
   /** 补 @ 检测:welink 只对 IM 客户端 @-mention UI 置 at;手打 `@<account> ...` 时按正文前缀补 at 并剥前缀,让文本 @ 也能触发会话。 */
