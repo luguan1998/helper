@@ -46,15 +46,46 @@ interface HistoryRespData {
 }
 
 /**
+ * 从 stdout 截取首个完整 JSON 对象。真实 welink-cli 的 send-to-group(--image/--file)在 JSON 前
+ * 往 stdout 打印进度行("Getting user info..."/"Uploading file..."/"Creating share link..."/"Sending message...");
+ * sim 与 --text 不打。截取首个 '{' 起、括号配平(尊重字符串/转义)的对象,容忍前导进度文本与尾部噪声。
+ * 无 '{' → 抛错;未闭合 → 抛错。
+ */
+function extractJsonObject(raw: string): string {
+  const start = raw.indexOf('{')
+  if (start < 0) throw new Error('welink-cli: stdout 无 JSON 对象')
+  let depth = 0
+  let inStr = false
+  let esc = false
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+    } else if (c === '"') {
+      inStr = true
+    } else if (c === '{') {
+      depth++
+    } else if (c === '}') {
+      depth--
+      if (depth === 0) return raw.slice(start, i + 1)
+    }
+  }
+  throw new Error('welink-cli: stdout JSON 对象未闭合')
+}
+
+/**
  * 解析 stdout 为信封,校验 resultCode,返回 respData。
- * 关键:msgId/maxMsgId/minMsgId 及 send 响应的 msgIds[] 元素都是 >2^53 的大整数(真实 ~8.9e16),
- * JSON.parse 当 number 会丢精度 → 先正则把这些字段的裸数字字面量加引号包成 string 再 parse,全程以
- * string 携带、用 BigInt 比较。(字段若本身已带引号则正则不匹配,原样保留,同样安全。)
+ * 真实 welink-cli 的 send-to-group(--image/--file)在 JSON 前打印进度行到 stdout → 先 extractJsonObject
+ * 截取首个完整对象(容忍前导/尾部噪声;否则 JSON.parse 撞上 "Getting user info..." 报 Unexpected token)。
+ * msgId/maxMsgId/minMsgId 及 msgIds[] 元素都是 >2^53 的大整数(真实 ~8.9e16),JSON.parse 当 number 会
+ * 丢精度 → 正则把这些字段的裸数字引号化成 string 再 parse,全程 string 携带、BigInt 比较。
+ * (字段若已带引号则正则不匹配,原样保留,同样安全。)
  */
 function parseEnvelope<T = unknown>(raw: string): T {
-  const trimmed = raw.trim()
-  if (!trimmed) throw new Error('welink-cli: empty stdout')
-  const safe = trimmed
+  const json = extractJsonObject(raw) // 容忍前导进度行(--image/--file 有)
+  const safe = json
     .replace(/"msgId"\s*:\s*(\d+)/g, '"msgId":"$1"')
     .replace(/"maxMsgId"\s*:\s*(\d+)/g, '"maxMsgId":"$1"')
     .replace(/"minMsgId"\s*:\s*(\d+)/g, '"minMsgId":"$1"')
