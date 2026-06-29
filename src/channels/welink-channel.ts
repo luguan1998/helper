@@ -2,20 +2,18 @@
 // 真实 welink-cli 输出格式有变时,只需改此文件(locality 来自接缝)。
 // 群组导向:构造时绑定 groupId,所有 send 固定发到该群;sendText/sendPicture 的 userId
 // 形参仅为兼容端口签名(群模型下被忽略——回复一律发到构造时的群),核心仍传 sender 以备日志/回调。
-// 用 execFile 传参数组;Windows 下经 prepareSpawn(../win-spawn.ts):`where` 解析全路径、.cmd 走
-// `cmd /d /s /c <全引号命令行>`——既解决 PATH 不搜的 ENOENT,又避免 shell 按空格/换行截断 --text。
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
-import { prepareSpawn } from '../win-spawn.js'
+// 用 execFileCmd(cross-spawn)调 welink-cli:Windows .cmd/.bat 自动解析底层 .exe/node、无 shell →
+// 既解决 PATH 不搜的 ENOENT,又彻底避免 cmd 按空格/换行截断 --text、`"` 断引号、`%` 展开环境变量。
+import { execFileCmd } from '../win-spawn.js'
 import type { Channel } from './channel.js'
 import type { IncomingMessage } from '../types.js'
-
-const execFileAsync = promisify(execFile)
 
 const DEFAULT_BINARY = process.env.WELINK_CLI_BIN ?? 'welink-cli'
 /** 可选:设则前缀到 args(供 `node <script>` 跑 sim;真实 welink 不需要)。 */
 const DEFAULT_SCRIPT = process.env.WELINK_CLI_SCRIPT ?? ''
-/** bot 自身账号(过滤自身消息,避免回环;需与 sim 的 WELINK_SIM_ACCOUNT 一致)。 */
+/** bot 自身账号(回环过滤的次要手段:按 sender 排除自身消息;需与 sim 的 WELINK_SIM_ACCOUNT 一致)。
+ *  主要回环过滤按 sentIds(本通道 CLI 发出消息的 msgId),不依赖此账号匹配。真实 welink 未设时回落 'bot01',
+ *  sender 过滤失效但 sentIds 仍生效(前提:send-to-group 响应含 msgId)。 */
 const DEFAULT_ACCOUNT = process.env.WELINK_ACCOUNT ?? 'bot01'
 const DEFAULT_QUERY_COUNT = Number(process.env.WELINK_QUERY_COUNT ?? 20)
 
@@ -65,6 +63,22 @@ function parseEnvelope<T = unknown>(raw: string): T {
     throw new Error(`welink-cli failed: ${parsed.resultCode} ${parsed.resultContext ?? ''}`.trim())
   }
   return parsed.respData as T
+}
+
+/**
+ * 从 send-to-group 响应的 respData 取新消息的 msgId(用于排除自身回环消息)。
+ * 真实 welink 的 send respData 未文档化;sim 返回 { msgId }。parseEnvelope 已把数字
+ * msgId 引号化成 string,故此处直接取值。兼容字段名 msgId/messageId/messageID/id;
+ * 任一命中即返回;响应无 msgId → undefined(调用方记警告,回退到 account 过滤)。
+ */
+function extractSentMsgId(respData: unknown): string | undefined {
+  if (!respData || typeof respData !== 'object') return undefined
+  const r = respData as Record<string, unknown>
+  for (const k of ['msgId', 'messageId', 'messageID', 'id']) {
+    const v = r[k]
+    if (v !== null && v !== undefined && v !== '') return String(v)
+  }
+  return undefined
 }
 
 /** 从 IMAGESPAN_MSG/FILE_MSG 的 content 取 `/:um_begin{` 后到首个 `|` 的 URL(段 0)。 */
@@ -131,7 +145,7 @@ export interface WelinkChannelOptions {
   groupId: string
   /** 可选脚本路径(供 `node <script>` 跑 sim)。 */
   script?: string
-  /** bot 自身账号(过滤自身消息,避免回环)。 */
+  /** bot 自身账号(回环过滤的次要手段:按 sender 排除;主要靠 sentIds 按 CLI 发出 msgId 排除)。 */
   account?: string
   queryCount?: number
 }
@@ -146,11 +160,35 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
 
   const prefixArgs = script ? [script] : []
 
-  /** 调 welink-cli im 子命令。经 prepareSpawn:.cmd → `cmd /d /s /c <全引号命令行>`(防 --text 被空格/换行切),.exe/全路径 → 无 shell(Node MSVC 引号,空格/换行/引号全安全)。 */
+  /** 调 welink-cli im 子命令。经 execFileCmd(cross-spawn):.cmd/.bat 解析底层 exe 无 shell,`--text` 的空格/换行/`"`/`%` 全安全。 */
   async function runIm(...args: string[]): Promise<string> {
-    const p = prepareSpawn(binary, [...prefixArgs, 'im', ...args])
-    const { stdout } = await execFileAsync(p.file, p.args, { maxBuffer: 10 * 1024 * 1024, ...p.options })
-    return stdout
+    return execFileCmd(binary, [...prefixArgs, 'im', ...args], { maxBuffer: 10 * 1024 * 1024 })
+  }
+
+  /**
+   * 记住本通道经 CLI 发出的消息 msgId,getNewMessages 时排除(防回环:bot 自己的回复被轮询捞回
+   * 喂给 Claude → 无限循环)。send-to-group 成功响应的 respData.msgId 加入此集合。
+   * 只需覆盖"最近 queryCount 条"窗口内的回环消息;msgId 单调递增,最早发出的最不可能再出现在最近
+   * 批次,故 FIFO 淘汰。上限远大于 queryCount,余量充足。
+   */
+  const sentIds = new Set<string>()
+  const SENT_ID_CAP = Math.max(256, queryCount * 8)
+  function rememberSent(id: string): void {
+    if (!id) return
+    sentIds.add(id)
+    if (sentIds.size > SENT_ID_CAP) {
+      const oldest = sentIds.values().next().value
+      if (oldest !== undefined) sentIds.delete(oldest)
+    }
+  }
+
+  /** 发到群并记录新消息 msgId(防回环)。respData 无 msgId 时记警告(回退到 account 过滤)。 */
+  async function sendAndRemember(...args: string[]): Promise<void> {
+    const stdout = await runIm('send-to-group', ...args)
+    const respData = parseEnvelope(stdout) // 校验 resultCode(失败抛 → Assistant 降级致歉)
+    const id = extractSentMsgId(respData)
+    if (id) rememberSent(id)
+    else console.warn('[welink-channel] send-to-group 响应未含 msgId,无法按发送排除自身回环消息;请确认 WELINK_ACCOUNT 已设为 bot 登录账号作为回退过滤')
   }
 
   /** 补 @ 检测:welink 只对 IM 客户端 @-mention UI 置 at;手打 `@<account> ...` 时按正文前缀补 at 并剥前缀,让文本 @ 也能触发会话。 */
@@ -168,6 +206,7 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
   return {
     /**
      * 拉取群最近 queryCount 条(新→old),过滤自身(避免回环)后映射。
+     * 回环过滤双重:sender=bot 账号(WELINK_ACCOUNT)+ 本通道 CLI 发出的 msgId(sentIds,主要手段)。
      * 水位去重(只触发一次)+ 首次排除历史 由 core 负责(state.ts loadWatermark/saveWatermark)。
      */
     async getNewMessages(): Promise<IncomingMessage[]> {
@@ -176,7 +215,9 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
         const data = parseEnvelope<HistoryRespData>(stdout)
         const chatInfo = data?.chatInfo ?? []
         return chatInfo
-          .filter(m => m.sender !== account)
+          // 排除回环消息:① sender=bot 自身账号(WELINK_ACCOUNT,次要);② 本通道经 CLI 发出的 msgId
+          //   (sentIds,主要,不依赖账号匹配——即便操作者用 bot 同一账号在 IM 客户端发言也不误排除,只排 CLI 发的)
+          .filter(m => m.sender !== account && !sentIds.has(String(m.msgId)))
           .map(m => enrichAt(toIncoming(m)))
           .reverse() // chatInfo 是 new→old;反转为 old→new 便于 core 按序处理
       } catch (err) {
@@ -186,18 +227,15 @@ export function createWelinkChannel(options: WelinkChannelOptions): Channel {
     },
     /** 发文本到群(userId 形参忽略,发到构造时的 groupId)。 */
     async sendText(_userId: string, text: string): Promise<void> {
-      const stdout = await runIm('send-to-group', '--group-id', groupId, '--text', text)
-      parseEnvelope(stdout) // 校验 resultCode(失败抛 → Assistant 降级致歉)
+      await sendAndRemember('--group-id', groupId, '--text', text)
     },
     /** 发图片到群。 */
     async sendPicture(_userId: string, imagePath: string): Promise<void> {
-      const stdout = await runIm('send-to-group', '--group-id', groupId, '--image', imagePath)
-      parseEnvelope(stdout)
+      await sendAndRemember('--group-id', groupId, '--image', imagePath)
     },
     /** 发文件到群。 */
     async sendFile(_userId: string, filePath: string): Promise<void> {
-      const stdout = await runIm('send-to-group', '--group-id', groupId, '--file', filePath)
-      parseEnvelope(stdout)
+      await sendAndRemember('--group-id', groupId, '--file', filePath)
     },
   }
 }

@@ -1,61 +1,57 @@
-// Windows 命令调用辅助:解决两个 Node坑——(1) spawn(CreateProcess 用 lpApplicationName)不搜 PATH,
-// 裸名(如 `welink-cli`/`claude`/`python`)ENOENT;(2) .cmd/.bat 壳不能无 shell 运行,而 shell:true 又不给
-// 参数加引号 → cmd 按空格/换行切参数(截断 --text / --append-system-prompt)。
-// 策略:`where` 解析全路径,优先 .exe(无 shell,Node MSVC 引号传参,空格/换行/引号全安全);.cmd/.bat →
-// 显式 `cmd /d /s /c <全引号命令行>`。非 Windows / 已是全路径 → 原样无 shell。
-// 供 welink-channel / claude-client / pipeline 三处复用(同源问题,DRY)。
-import { execSync } from 'node:child_process'
+// Windows 命令调用辅助:cross-spawn 自动解析 .cmd/.bat 底层 .exe/node 并无 shell spawn → 不经 cmd.exe,
+// `"`/`%`/换行/空格全安全(旧 quoteArg+cmd /c 方案下 `"` 会断引号、`%` 会被展开环境变量)。
+// 供 welink-channel / claude-client / pipeline 三处复用。.exe 直跑、非 Windows 亦兼容(cross-spawn 透明转发)。
+import { spawn } from 'cross-spawn'
+import type { ChildProcess, SpawnOptions } from 'node:child_process'
 
-export interface ResolvedCmd { file: string; useShell: boolean }
-
-const cache = new Map<string, ResolvedCmd>()
-
-/** 解析命令:Windows 裸名走 `where`(优先 .exe 无 shell;.cmd/.bat 需 shell);非 Windows / 全路径原样无 shell。结果缓存。 */
-export function resolveCommand(name: string): ResolvedCmd {
-  if (process.platform !== 'win32' || /[\\/]/.test(name)) return { file: name, useShell: false }
-  const cached = cache.get(name)
-  if (cached) return cached
-  let r: ResolvedCmd
-  try {
-    const out = execSync(`where ${name}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim()
-    const paths = out.split(/\r?\n/).filter(Boolean)
-    const exe = paths.find(p => /\.exe$/i.test(p))
-    if (exe) r = { file: exe, useShell: false }
-    else {
-      const sh = paths.find(p => /\.(cmd|bat)$/i.test(p))
-      r = sh ? { file: sh, useShell: true } : { file: name, useShell: false }
-    }
-  } catch {
-    r = { file: name, useShell: false } // 不在 PATH;交调用方处理 ENOENT
-  }
-  cache.set(name, r)
-  return r
+export interface ExecOptions {
+  /** stdout 上限,超则 kill 并 reject(防 OOM)。 */
+  maxBuffer?: number
+  /** 超时 ms,超则 kill 并 reject。 */
+  timeout?: number
+  /** 写入 stdin 后 end(pipeline 传 JSON)。不设则只 end stdin。 */
+  input?: string | Buffer
 }
 
-/** 引号一个参数供 `cmd /c` 用:折叠换行(cmd 不能内嵌),含空格/引号则包双引号(MSVC 规则:反斜杠只在引号前需翻倍)。 */
-export function quoteArg(arg: string): string {
-  const a = arg.replace(/[\r\n]+/g, ' ')
-  if (a.length > 0 && !/[\s"]/.test(a)) return a
-  let s = a.replace(/(\\*)(")/g, '$1$1\\$2')
-  s = s.replace(/(\\*)$/, '$1$1')
-  return `"${s}"`
-}
-
-export interface PreparedSpawn {
-  file: string
-  args: string[]
-  options: { shell: boolean; windowsVerbatimArguments?: boolean }
+/** 流式 spawn(cross-spawn):Windows .cmd/.bat 解析底层 .exe/node、无 shell;供 claude(NDJSON streaming,需 ChildProcess 句柄写 stdin/读 stdout)。 */
+export function spawnCmd(file: string, args: string[], options: SpawnOptions = {}): ChildProcess {
+  return spawn(file, args, options)
 }
 
 /**
- * 把 (file, args) 准备成 spawn/execFile 可用的 (file, args, options):
- *   .exe / 全路径 / 非 Windows → 原样、无 shell(Node MSVC 引号传参);
- *   .cmd/.bat → `cmd /d /s /c <全引号命令行>`(windowsVerbatimArguments=true,命令行原样透传)。
- * 调用方再合并 maxBuffer / stdio / cwd / env / timeout 等。
+ * execFile 风格:cross-spawn spawn + 收 stdout + 可选 stdin input/timeout/maxBuffer。
+ * 任何 exit code 都 resolve(让调用方查 envelope resultCode);仅 spawn 错误/timeout/maxBuffer reject。
+ * 用 'close'(非 'exit')等 stdout 流 drain 完,确保收集完整。
  */
-export function prepareSpawn(file: string, args: string[]): PreparedSpawn {
-  const { file: resolved, useShell } = resolveCommand(file)
-  if (!useShell) return { file: resolved, args, options: { shell: false } }
-  const cmdline = [resolved, ...args].map(quoteArg).join(' ')
-  return { file: 'cmd', args: ['/d', '/s', '/c', cmdline], options: { shell: false, windowsVerbatimArguments: true } }
+export async function execFileCmd(file: string, args: string[], options: ExecOptions & SpawnOptions = {}): Promise<string> {
+  const { maxBuffer = 10 * 1024 * 1024, timeout, input, ...rest } = options
+  const child = spawn(file, args, { ...rest, stdio: ['pipe', 'pipe', 'pipe'] })
+  let stdout = ''
+  let size = 0
+  let done = false
+  let timer: NodeJS.Timeout | undefined
+  return new Promise<string>((resolve, reject) => {
+    const finish = (err: Error | null): void => {
+      if (done) return
+      done = true
+      if (timer) clearTimeout(timer)
+      if (err) { child.kill(); reject(err) } else resolve(stdout)
+    }
+    if (timeout) timer = setTimeout(() => finish(new Error(`exec timeout ${timeout}ms`)), timeout)
+    child.stdout.setEncoding('utf-8')
+    child.stdout.on('data', (c: string) => {
+      if (done) return
+      size += c.length
+      stdout += c
+      if (size > maxBuffer) finish(new Error(`exec maxBuffer exceeded (${maxBuffer})`))
+    })
+    child.on('error', finish)
+    child.on('close', () => finish(null))
+    if (input !== undefined && child.stdin) {
+      child.stdin.on('error', () => {}) // 忽略 EPIPE(子进程早退)
+      child.stdin.end(input)
+    } else {
+      child.stdin?.end()
+    }
+  })
 }

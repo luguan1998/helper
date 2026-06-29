@@ -2,8 +2,7 @@
 // modelStep 调命名模型 → ctx.reply;scriptStep 纯变换(可读 reply/scratch、改写 content 供下一步)。
 // scriptFileStep 调外部脚本(stdin JSON → stdout JSON,merge session/content),会话预处理等确定性场景用。
 // 分支逻辑写在 script 步骤内(如"若是图片才调 vision"、"若未预处理且带日志才跑"),不引入 DAG。
-import { execFile } from 'node:child_process'
-import { prepareSpawn } from './win-spawn.js'
+import { execFileCmd } from './win-spawn.js'
 import { execPath } from 'node:process'
 import type { Models } from './llm.js'
 import type { UserContent, OnPartial } from './types.js'
@@ -74,21 +73,14 @@ export interface ScriptFileOptions {
  */
 export async function runScriptFile(ctx: StepCtx, scriptPath: string, opts: ScriptFileOptions = {}): Promise<void> {
   const input = JSON.stringify({ content: ctx.content, session: ctx.session, workspacePath: ctx.workspacePath })
-  const stdout: string = await new Promise((resolve, reject) => {
-    const direct = opts.interpreter === null
-    const cmd = direct ? scriptPath : (opts.interpreter ?? execPath)
-    const args = direct ? [] : [scriptPath]
-    // 经 prepareSpawn:Windows .cmd/.bat → 全引号 cmd /c;全路径 .exe → 无 shell(Node 自动引号文件路径,空格安全)
-    const sp = prepareSpawn(cmd, args)
-    const child = execFile(sp.file, sp.args, {
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: opts.timeoutMs ?? 300_000,
-      ...sp.options,
-    }, (err, out) => {
-      if (err) reject(err)
-      else resolve(out)
-    })
-    child.stdin?.end(input)
+  const direct = opts.interpreter === null
+  const cmd = direct ? scriptPath : (opts.interpreter ?? execPath)
+  const args = direct ? [] : [scriptPath]
+  // 经 execFileCmd(cross-spawn):.cmd/.bat 解析底层 exe 无 shell,脚本路径/JSON input 的空格/换行/`"`/`%` 全安全
+  const stdout: string = await execFileCmd(cmd, args, {
+    maxBuffer: 50 * 1024 * 1024,
+    timeout: opts.timeoutMs ?? 300_000,
+    input,
   })
   const trimmed = stdout.trim()
   if (!trimmed) return // 脚本 no-op(如会话尚无 pendingInput)

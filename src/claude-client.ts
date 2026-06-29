@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Llm, SessionLlm } from './llm.js'
 import { SessionPool, type Session } from './session-pool.js'
-import { prepareSpawn } from './win-spawn.js'
+import { spawnCmd } from './win-spawn.js'
 import { loadSessionId, saveSessionId } from './state.js'
 import { ensureDir, createSessionWorkspace, removeDirIfEmpty } from './workspace.js'
 import type { Reply, UserContent, OnPartial } from './types.js'
@@ -76,12 +76,10 @@ function spawnClaude(opts: {
   const args = buildClaudeArgs(opts)
   const env = sanitizeEnvForCli()
   if (opts.model) env.ANTHROPIC_MODEL = opts.model
-  const p = prepareSpawn(resolved.binary, args)
-  return spawn(p.file, p.args, {
+  return spawnCmd(resolved.binary, args, {
     cwd: opts.cwd,
     env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    ...p.options, // Windows .cmd → cmd /d /s /c <全引号命令行>(防 --append-system-prompt 被空格切);.exe → 无 shell
+    stdio: ['pipe', 'pipe', 'pipe'], // cross-spawn:.cmd 解析底层 exe 无 shell,--append-system-prompt 的空格/换行/`"`/`%` 全安全
   })
 }
 
