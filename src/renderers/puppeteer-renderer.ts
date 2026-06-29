@@ -1,4 +1,4 @@
-// 生产适配器:PuppeteerRenderer —— Markdown → HTML(setContent)→ 整页截图 PNG。
+// 生产适配器:PuppeteerRenderer —— Markdown → HTML(setContent)→ 按内容高度 clip 截图 PNG。
 // 用 puppeteer-core(不下载 Chromium),executablePath 由 CHROMIUM_PATH 或本机探测给出。
 import puppeteer from 'puppeteer-core'
 import type { Browser } from 'puppeteer-core'
@@ -59,9 +59,23 @@ export function createPuppeteerRenderer(options: PuppeteerRendererOptions = {}):
       try {
         await page.setViewport({ width, height: 800, deviceScaleFactor: DEVICE_SCALE })
         await page.setContent(html, { waitUntil: 'networkidle0' })
+        // 量正文真实占地(卡片高 + 上下外边距),按此高度 clip 截图:
+        // fullPage 截的是 <html> 的 scrollHeight,而根元素至少撑满视口(800),
+        // 内容短时下半截全是 body 浅灰底(看似"全白")。clip 按内容高度精确截取,长短皆宜。
+        const contentHeight = await page.evaluate(() => {
+          const card = document.querySelector('.card') as HTMLElement | null
+          if (!card) return document.body.scrollHeight
+          const r = card.getBoundingClientRect()
+          const s = getComputedStyle(card)
+          const mt = parseFloat(s.marginTop) || 0
+          const mb = parseFloat(s.marginBottom) || 0
+          return Math.ceil(r.height + mt + mb)
+        })
         const dest = join(tmpdir(), `ai-response-${randomBytes(6).toString('hex')}.png`)
-        // fullPage 自适应内容高度:宽固定 720,高随正文
-        await page.screenshot({ path: dest, fullPage: true })
+        await page.screenshot({
+          path: dest,
+          clip: { x: 0, y: 0, width, height: Math.max(contentHeight, 1) },
+        })
         return dest
       } finally {
         await page.close()
