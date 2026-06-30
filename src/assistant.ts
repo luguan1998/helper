@@ -14,14 +14,15 @@ import type { ModelSpec } from './models.js'
 import { buildModels, DEFAULT_MODEL_SPECS } from './models.js'
 import { createDefaultPipeline } from './pipelines/default.js'
 import { createLogQaPipeline } from './pipelines/log-qa.js'
+import { loadPreprocessSpecs } from './pipelines/preprocess.js'
 import { loadLastMsgId, saveLastMsgId } from './state.js'
 
 const DEFAULT_POLL_MS = 1000
 const DEFAULT_MAX_SESSIONS = 8
 const SUMMARY_MAX = 100
 const DEFAULT_EXIT_KEYWORDS = ['esc', 'quit', 'exit']
-/** 单条 thinking 消息发送超时(ms):防 welink sendText 挂起阻塞最终回复。 */
-const THINKING_SEND_TIMEOUT_MS = 30_000
+/** 单条群消息发送超时(ms):防 welink sendText 挂起阻塞(thinking 块 / 预处理结果通知)。 */
+const SEND_TIMEOUT_MS = 30_000
 /** 单条 thinking 消息最大字符:超长分段(防 IM 消息长度上限静默失败)。 */
 const THINKING_CHUNK_MAX = 4000
 
@@ -194,7 +195,7 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
 
   if (options.models) {
     models = options.models
-    pipeline = pickDefaultPipeline(options, models)
+    pipeline = await pickDefaultPipeline(options, models)
   } else if (options.llm) {
     // 旧用法:单 Llm → 平凡 pipeline(无接力,直接单模型)
     models = { default: options.llm }
@@ -204,7 +205,7 @@ export async function runAssistant(options: AssistantOptions = {}): Promise<Assi
     if (!groupId) throw new Error('runAssistant: groupId required (set options.groupId or WELINK_GROUP_ID)')
     const specs = buildDefaultSpecs(options)
     models = await buildModels(specs, { cwd: options.claudeCwd ?? 'workspace', cliCommand: options.cliCommand, groupId })
-    pipeline = pickDefaultPipeline(options, models)
+    pipeline = await pickDefaultPipeline(options, models)
     sessionLlm = options.sessionLlm ?? (models.text as SessionLlm | undefined)
   }
 
@@ -253,12 +254,14 @@ function buildDefaultSpecs(options: AssistantOptions): ModelSpec[] {
 
 /**
  * 选 pipeline:options.pipeline 优先;env BOT_PIPELINE=log-qa 时用日志问答 pipeline(需 models.text);
- * 否则默认接力 pipeline。日志场景零配置即:`BOT_PIPELINE=log-qa npm run dev`。
+ * 否则默认接力 pipeline(specs 经 loadPreprocessSpecs() 载入:env BOT_PREPROCESS_CONFIG .mjs 或内置默认)。
+ * 日志场景零配置即:`BOT_PIPELINE=log-qa npm run dev`。async 因 loadPreprocessSpecs 可能动态 import .mjs。
  */
-function pickDefaultPipeline(options: AssistantOptions, models: Models): Pipeline {
+async function pickDefaultPipeline(options: AssistantOptions, models: Models): Promise<Pipeline> {
   if (options.pipeline) return options.pipeline
   if (process.env.BOT_PIPELINE === 'log-qa' && models.text) return createLogQaPipeline()
-  return createDefaultPipeline()
+  const specs = await loadPreprocessSpecs()
+  return createDefaultPipeline(specs)
 }
 
 class Assistant implements AssistantHandle {
@@ -504,9 +507,17 @@ class Assistant implements AssistantHandle {
       if (!p.thinking) return
       for (const chunk of chunkThinking(p.thinking)) {
         partialChain = partialChain
-          .then(() => withTimeout(this.deps.channel.sendText(msg.user, `💭 ${chunk}`), THINKING_SEND_TIMEOUT_MS))
+          .then(() => withTimeout(this.deps.channel.sendText(msg.user, `💭 ${chunk}`), SEND_TIMEOUT_MS))
           .catch(() => { /* 单条 thinking 发送失败/超时不阻断后续与最终回复 */ })
       }
+    }
+    // 预处理结果通知:preprocess step 完成产物后经 notify 把摘要发到群;串行排队,最终回复前 drain(先发结果再发回复)。
+    let notifyChain: Promise<void> = Promise.resolve()
+    const notify = (text: string) => {
+      if (!text) return
+      notifyChain = notifyChain
+        .then(() => withTimeout(this.deps.channel.sendText(msg.user, text), SEND_TIMEOUT_MS))
+        .catch(() => { /* 单条通知发送失败/超时不阻断后续与最终回复 */ })
     }
     // esc-中断 watcher:仅在活跃用户+对话模型时并发轮询(handle 在途期间主循环阻塞,esc 只能由此捕获);finally 停。
     const stopWatcher = this.startInterruptWatcher(msg.user)
@@ -521,10 +532,12 @@ class Assistant implements AssistantHandle {
         session: s?.scratch ?? {},
         workspacePath: s?.workspacePath,
         onPartial,
+        notify,
       }
       const reply = await runPipeline(this.deps.pipeline, this.deps.models, ctx)
 
-      // 等 thinking 消息发完再发最终回复(先 think 后结果)
+      // 先发预处理结果通知,再发 thinking,最后发最终回复(保序)
+      await notifyChain
       await partialChain
 
       // esc 中断在途命令 → 发"已中断"提示,不退出会话(一次 esc 中断、二次 esc 退出)
@@ -551,7 +564,8 @@ class Assistant implements AssistantHandle {
         this.deps.onReply?.(msg.user, { mode, reply })
       }
     } catch (err) {
-      // 先 drain 在途 thinking(防 thinking 与致歉乱序),再发纯文本致歉,循环不死
+      // 先 drain 在途通知+thinking(防与致歉乱序),再发纯文本致歉,循环不死
+      await notifyChain.catch(() => {})
       await partialChain.catch(() => {})
       try {
         await this.deps.channel.sendText(msg.user, `抱歉,处理该消息时出错:${(err as Error).message}`)

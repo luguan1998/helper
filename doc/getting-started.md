@@ -57,57 +57,57 @@ npm run sim:bot
 
 ## 3. 各类脚本预处理(默认就支持,不用切 pipeline)
 
-**默认行为**:开启会话后,你发一条**带文件绝对路径**的消息,bot 自动用 `scripts/preprocess-log.js`(Node.js)预处理,产物存工作目录,然后你提问 Claude 基于产物回答。
+**默认行为**:开启会话后,你发一条**带文件绝对路径**的消息,bot 自动用 `scripts/preprocess-log.js`(Node.js)预处理,产物存工作目录,**先把摘要发到群**,然后你提问 Claude 基于产物回答。
+
+> **要换脚本 / 用 Python / exe / 多种预处理?** 写一个 `.mjs` 配置文件指向它,见 `doc/pre-hook-handbook.md`(配方集 + 协议 + 完整 spec 字段)。
 
 试一下(模拟器或真群,开启会话后):
 ```
 @bot 开启
-D:/logs/2024-01-01.zip 有什么错误       ← 消息里贴日志绝对路径,触发预处理
+D:/logs/2024-01-01.zip 有什么错误       ← 贴日志绝对路径触发预处理;bot 先发"✅ 预处理完成"摘要
 这个日志里有哪些 ERROR?                   ← 后续提问,Claude grep 产物回答
 exit
 ```
 
-### 换成 Python 脚本
+### 换脚本 / 用 Python / exe(写 `.mjs` 配置)
 
-把你的脚本放到 `scripts/parse-log.py`(模板见第 4 节),然后设两个环境变量再启动 bot:
+在项目根建 `preprocess.config.mjs`,声明一个 spec(触发正则 + 脚本 + 解释器):
 
-**Windows CMD:**
-```bat
-set BOT_PREPROCESS_SCRIPT=scripts/parse-log.py
-set BOT_PREPROCESS_INTERPRETER=python
-npm run sim:bot
-```
-**Windows PowerShell:**
-```powershell
-$env:BOT_PREPROCESS_SCRIPT='scripts/parse-log.py'
-$env:BOT_PREPROCESS_INTERPRETER='python'
-npm run sim:bot
-```
-**Linux / macOS:**
-```bash
-BOT_PREPROCESS_SCRIPT=scripts/parse-log.py BOT_PREPROCESS_INTERPRETER=python npm run sim:bot
+```js
+// Python 脚本(模板见第 4 节)
+export default [
+  {
+    name: 'log',
+    trigger: /([A-Za-z]:[\\/][^\s,，]+\.(?:zip|gz|tar|log|txt)|\/[^\s,，]+\.(?:zip|gz|tar|log|txt))/i,
+    inputFrom: 1,
+    script: 'scripts/parse-log.py',
+    interpreter: 'python',     // Windows 也可 'py';Linux/mac 'python3';省略=node 跑 .js;null=直跑 exe
+    timeoutMs: 600_000,
+  },
+]
 ```
 
-### 换成 exe(直接跑可执行)
+启动时指向它:
 
 ```bash
-# Windows CMD
-set BOT_PREPROCESS_SCRIPT=D:\tools\log-parser.exe
-set BOT_PREPROCESS_INTERPRETER=null
+# Windows PowerShell
+$env:BOT_PREPROCESS_CONFIG='preprocess.config.mjs'
 npm run sim:bot
-```
-`BOT_PREPROCESS_INTERPRETER=null` 表示"不用解释器,直接跑这个 exe"(exe 必须守第 4 节的协议)。
 
-### `BOT_PREPROCESS_INTERPRETER` 取值表
+# Linux / macOS
+BOT_PREPROCESS_CONFIG=preprocess.config.mjs npm run sim:bot
+```
+
+### `interpreter` 取值
 
 | 值 | 含义 |
 |---|---|
-| **不设** | 用 Node.js 跑 `.js`(默认) |
-| `python` / `py` / `python3` | 用对应 Python 跑 `.py` |
-| `null` / `none` / `direct` | 直接跑可执行(`.exe` 或带 shebang 的脚本) |
-| 其它(如 `ruby`) | 当作解释器名:`ruby scripts/x.rb` |
+| **省略** | 用 Node.js 跑 `.js`(默认) |
+| `'python'` / `'py'` / `'python3'` | 用对应 Python 跑 `.py` |
+| `null` | 直接跑可执行(`.exe` 或带 shebang 的脚本) |
+| 其它(如 `'ruby'`) | 当作解释器名:`ruby scripts/x.rb` |
 
-> `BOT_PREPROCESS_SCRIPT` 是脚本路径,相对项目根(如 `scripts/parse-log.py`)或绝对路径都行。Windows 路径用反斜杠(`D:\logs\x.zip`)在命令行里 OK;在消息正文里贴路径,反斜杠正斜杠都行(`D:/logs/x.zip` 最稳)。
+> `script` 是脚本路径,相对项目根(如 `scripts/parse-log.py`)或绝对路径都行。Windows 路径用反斜杠(`D:\logs\x.zip`)在命令行里 OK;在消息正文里贴路径,反斜杠正斜杠都行(`D:/logs/x.zip` 最稳)。完整 spec 字段(触发器、`notify`、`qaTemplate`…)见 `doc/pre-hook-handbook.md`。
 
 ---
 
@@ -116,13 +116,14 @@ npm run sim:bot
 ### 协议(必须守)
 
 你的脚本被 bot 调用时:
-- **stdin** 收到一段 JSON:`{ "content": ..., "session": {...}, "workspacePath": "..." }`
-  - `session.pendingInput`:用户消息里抽到的文件路径(你要处理的对象)。
+- **stdin** 收到一段 JSON:`{ "content": ..., "workspacePath": "...", "trigger": { "name": ..., "match": ..., "groups": [...], "input": "..." } }`
+  - `trigger.input`:从你消息里抽到的待处理对象(如文件路径)——你要处理的就是它。
   - `workspacePath`:本次会话的工作目录(产物存这里,Claude 问答时能直接读)。
-- **stdout** 输出 JSON:`{ "session": { ...你要存回 bot 的字段 } }`,bot 会合并进会话状态。
-  - 约定回写:`preprocessed: true`(标记已处理,不会再跑)、`files: [...]`(产物清单)、`summary: "..."`(给 Claude 的线索)。
-  - **stdout 为空** = no-op(没 `pendingInput` 时就这么做,直接退出)。
-- **非零退出** = 失败,bot 会发致歉,且不标 `preprocessed`(下次发文件可重试)。
+- **stdout** 输出 JSON:`{ "summary": "...", "artifacts": { "dir": "extracted", "files": [...] } }`
+  - `summary`:给 Claude 的产物摘要(必填)。
+  - `artifacts.dir`:产物目录(相对 `workspacePath`,如 `extracted`);`files`:产物清单。
+  - **stdout 为空** = no-op(没 `trigger.input` 时就这么做,直接退出)。
+- **非零退出** = 失败,bot 会发致歉,且不标完成(下次发同一路径可重试)。
 
 ### Node.js 模板(`scripts/preprocess-log.js` 已是,可改)
 
@@ -132,8 +133,8 @@ import { join, basename } from 'node:path'
 
 let raw = ''
 for await (const chunk of process.stdin) raw += chunk
-const { session = {}, workspacePath } = JSON.parse(raw)
-const input = session.pendingInput
+const { trigger = {}, workspacePath } = JSON.parse(raw)
+const input = trigger.input
 if (!input || !workspacePath) { process.stdout.write(''); process.exit(0) }  // no-op
 
 const outDir = join(workspacePath, 'extracted')
@@ -141,7 +142,8 @@ await mkdir(outDir, { recursive: true })
 // ... 这里写你的解压/解析逻辑,产物落 outDir ...
 const files = await readdir(outDir)
 process.stdout.write(JSON.stringify({
-  session: { preprocessed: true, files, summary: `已处理 ${basename(input)}` }
+  summary: `已处理 ${basename(input)}`,
+  artifacts: { dir: 'extracted', files },
 }))
 ```
 
@@ -152,9 +154,9 @@ import sys, json, os, zipfile
 
 raw = sys.stdin.read()
 data = json.loads(raw)
-session = data.get('session') or {}
+trigger = data.get('trigger') or {}
 wp = data.get('workspacePath')
-inp = session.get('pendingInput')
+inp = trigger.get('input')
 if not inp or not wp:
     sys.stdout.write('')           # no-op
     sys.exit(0)
@@ -172,11 +174,12 @@ else:
     files = [os.path.basename(inp)]
 
 sys.stdout.write(json.dumps({
-    'session': {'preprocessed': True, 'files': files, 'summary': f'已处理 {os.path.basename(inp)}'}
+    'summary': f'已处理 {os.path.basename(inp)}',
+    'artifacts': {'dir': 'extracted', 'files': files},
 }))
 ```
 
-放好后按第 3 节设 `BOT_PREPROCESS_SCRIPT` + `BOT_PREPROCESS_INTERPRETER` 启动。
+放好后按第 3 节写 `.mjs` 配置(`BOT_PREPROCESS_CONFIG`)启动。
 
 > Python 第三方库(如 pandas)写 `scripts/requirements.txt`,部署时 `pip install -r scripts/requirements.txt`。`zipfile`/`json`/`os` 是标准库,零依赖。
 
@@ -188,8 +191,7 @@ sys.stdout.write(json.dumps({
 |---|---|---|---|
 | `WELINK_GROUP_ID` | 接真群时必填 | — | 要监控的群 ID(`sim:bot` 默认 100001) |
 | `WELINK_ACCOUNT` | 否 | `bot01` | bot 自己的账号(过滤自身消息,避免回环) |
-| `BOT_PREPROCESS_SCRIPT` | 否 | `scripts/preprocess-log.js` | 预处理脚本路径(支持 .js/.py/.exe 等) |
-| `BOT_PREPROCESS_INTERPRETER` | 否 | 不设=node | 脚本解释器(见第 3 节表) |
+| `BOT_PREPROCESS_CONFIG` | 否 | 不设=内置默认 | 指向 `.mjs` 配置文件,声明预处理 spec(触发正则+脚本+解释器);见 `doc/pre-hook-handbook.md` |
 | `BOT_PICTURE_OUTPUT` | 否 | `image` | `image`=发截图;`html`=发 HTML 文件 |
 | `BOT_INCLUDE_THINKING` | 否 | 不设=关 | `1`/`true`/`yes`/`on`=把 Claude 思考过程(thinking 块)流式发出:每完成一块先发一条 `💭 ` 纯文本消息,再发最终回复(先 think 后结果) |
 | `BOT_STATE_DIR` | 否 | `~/.claude-bot` | 水位/会话 ID 持久化目录 |
@@ -222,11 +224,12 @@ sys.stdout.write(json.dumps({
 
 **预处理没触发?**
 - 消息正文必须含**文件绝对路径 + 扩展名**,如 `D:/logs/xxx.zip`(不能只写 `xxx.zip`)。
-- 必须先 `@bot 开启` 再发路径;发路径后 bot 会回预处理摘要。
-- 换了脚本但没生效?确认 `BOT_PREPROCESS_SCRIPT` 设对、重启了 bot。
+- 必须先 `@bot 开启` 再发路径;发路径后 bot 会先发"✅ 预处理完成"摘要。
+- 换了脚本/配置但没生效?配置仅启动时载入,**重启 bot**;确认 `BOT_PREPROCESS_CONFIG` 指对的 `.mjs`、spec 里 `script`/`interpreter` 路径对。
+- 没发"✅ 预处理完成"通知?默认开;确认 spec 没设 `notify: false`、`noticeTemplate` 没返回空串。
 
 **Python 脚本报 "python not found"?**
-- Windows 试用 `BOT_PREPROCESS_INTERPRETER=py`(官方 launcher);或用绝对路径 `BOT_PREPROCESS_INTERPRETER=C:\Python311\python.exe`。
+- Windows 在 spec 里用 `'py'` 作 `interpreter`(官方 launcher);或用绝对路径 `'C:\\Python311\\python.exe'`。
 - Linux/mac 用 `python3`。
 
 **内存爆 / OOM?**

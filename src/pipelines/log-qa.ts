@@ -1,8 +1,8 @@
 // 日志问答 pipeline:无 vision 的日志特化预处理 + 问答。
-// 触发限定日志扩展名(zip/gz/tgz/tar/log/txt);其余复用通用 preprocessSteps。
+// 触发限定日志扩展名(zip/gz/tgz/tar/log/txt);其余复用通用 preprocessSteps(多 spec、按输入去重)。
 // 日常零配置默认 pipeline 已含通用预处理(任意扩展名),本 pipeline 仅当要"日志特化 + 无 vision 识图"时用(BOT_PIPELINE=log-qa)。
 import { modelStep, type Pipeline } from '../pipeline.js'
-import { preprocessSteps } from './preprocess.js'
+import { preprocessSteps, filePathRegex, type PreprocessSpec } from './preprocess.js'
 
 const LOG_EXTS = ['zip', 'gz', 'tgz', 'tar', 'log', 'txt']
 
@@ -19,15 +19,19 @@ export interface LogQaPipelineOptions {
 
 /** 日志问答 pipeline:日志特化预处理(限定日志扩展名)+ text 问答。无 vision(纯文本日志场景)。 */
 export function createLogQaPipeline(opts: LogQaPipelineOptions = {}): Pipeline {
+  const logSpec: PreprocessSpec = {
+    name: 'log',
+    trigger: filePathRegex(LOG_EXTS),
+    inputFrom: 1,
+    script: opts.preprocessScript ?? 'scripts/preprocess-log.js',
+    interpreter: opts.interpreter,
+    timeoutMs: opts.timeoutMs,
+    driver: opts.driver ?? 'script',
+    appliesTo: 'text',
+  }
   return {
     steps: [
-      ...preprocessSteps({
-        scriptPath: opts.preprocessScript ?? 'scripts/preprocess-log.js',
-        interpreter: opts.interpreter,
-        timeoutMs: opts.timeoutMs,
-        driver: opts.driver ?? 'script',
-        exts: LOG_EXTS,
-      }),
+      ...preprocessSteps([logSpec]),
       modelStep('text'),
     ],
   }
