@@ -44,32 +44,25 @@ export function sanitizeEnvForCli(env: NodeJS.ProcessEnv = process.env): NodeJS.
 // ── CLI 参数(简化自 ai.ts:95)──
 // 保留 stream-json + bypassPermissions;去掉 --permission-prompt-tool stdio(bypass 已无需提示)
 // 与 --include-partial-messages(我们只要最终完整文本,不要增量)。
-function buildClaudeArgs(opts: { cwd: string; systemPrompt: string; resumeId?: string; addDirs?: string[] }): string[] {
+function buildClaudeArgs(opts: { cwd: string; systemPrompt: string; resumeId?: string }): string[] {
   const platformDesc = process.platform === 'win32'
     ? 'Windows(用反斜杠路径如 C:\\Users\\...)'
     : process.platform === 'darwin'
       ? 'macOS(用 /Users/... 路径)'
       : 'Linux(用 /home/... 路径)'
-  // 额外可访问目录(env BOT_ADD_DIRS):经 --add-dir 注入,Claude 可跨 cwd 之外这些目录用文件工具。
-  // 重复 `--add-dir <dir>` 而非 `--add-dir a b`:对"变长(variadic)"与"单值"两种解析都成立,跨 claude/opencc 变体最稳
-  // (实测 2.1.185:两种形式都把多目录注册给 Glob、非 last-wins;且 bot 用 stdin 送 prompt 无位置参数,无"变长吞 prompt"风险)。
-  // ⚠ 实测(2.1.185,GLM 后端):--add-dir 把目录注册给 Glob/Grep 工具(显式 path 可搜到),但 Glob/Grep 默认 `**` 范围
-  // **仅 cwd、不含 added dir**(与真 Claude Code 不同)。故须在 system prompt 明确告知 Claude:搜这些目录要显式传 path,
-  // 否则它用默认 `**` 搜不到 → add-dir 形同未生效。
-  const addDirs = opts.addDirs ?? []
-  const extraDirLine = addDirs.length > 0
-    ? `;额外可访问目录:${addDirs.join(', ')}(注意:Glob/Grep 默认仅搜当前工作目录,搜索上述额外目录时必须在工具的 path 参数显式传入对应目录路径)`
-    : ''
+  // 不用 --add-dir:实测(2.1.185,GLM 后端)--add-dir 把目录注册给 Glob/Grep 工具(显式 path 可搜到),但
+  // **不并入默认 `**` 搜索范围**(仅 cwd;与真 Claude Code 不同),且 system-prompt 指示"用显式 path"模型常不遵从
+  // → add-dir 形同未生效。改用 vibe-ide 风格:把额外目录直接作 cwd(env BOT_ADD_DIR,单个),默认 `**` 自然覆盖,根除搜索 bug。
+  // 预处理产物仍落 per-session 子目录(见 createClaudeCliLlm:在 cwd 之下),可被默认 `**` 命中。
   const args = [
     '-p',
     '--output-format', 'stream-json',
     '--input-format', 'stream-json',
     '--verbose',
     '--permission-mode', 'bypassPermissions',
-    '--append-system-prompt', `${opts.systemPrompt}\n(运行于 ${platformDesc};工作目录:${opts.cwd}${extraDirLine})`,
+    '--append-system-prompt', `${opts.systemPrompt}\n(运行于 ${platformDesc};工作目录:${opts.cwd})`,
   ]
   if (opts.resumeId) args.push('--resume', opts.resumeId)
-  for (const d of addDirs) args.push('--add-dir', d)
   return args
 }
 
@@ -81,7 +74,6 @@ function spawnClaude(opts: {
   resumeId?: string
   model?: string
   cliCommand?: string
-  addDirs?: string[]
 }): ChildProcess {
   const resolved = findBinary(opts.cliCommand)
   if ('error' in resolved) throw new Error(resolved.error)
@@ -116,8 +108,6 @@ export interface ClaudeSessionOpts {
   ownedWorkspacePath?: string
   /** 是否流式输出 thinking 块(env BOT_INCLUDE_THINKING);开启则每完成一个 thinking 块经 onPartial 回调发出,不拼进最终回复。 */
   includeThinking?: boolean
-  /** 额外可访问目录(env BOT_ADD_DIRS,逗号分隔);经 --add-dir 注入,让 Claude 跨 cwd 之外这些目录读写。 */
-  addDirs?: string[]
 }
 
 /** 解析布尔 env:1/true/yes/on(大小写不敏感)=true,其余(含未设/0/false/no/off)=false。 */
@@ -126,10 +116,11 @@ function parseBoolEnv(v: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
 }
 
-/** 解析 env BOT_ADD_DIRS:逗号分隔的额外可访问目录(空白忽略;未设/空=[])。Windows 反斜杠路径直接可用。 */
-function parseAddDirs(v: string | undefined): string[] {
-  if (!v) return []
-  return v.split(',').map(s => s.trim()).filter(Boolean)
+/** 解析单个额外目录 env(取首个逗号前项;空白忽略;未设/空=undefined)。Windows 反斜杠路径直接可用。 */
+function parseAddDir(v: string | undefined): string | undefined {
+  if (!v) return undefined
+  const first = v.split(',')[0]?.trim()
+  return first || undefined
 }
 
 export class ClaudeSession implements Session {
@@ -356,21 +347,22 @@ export interface ClaudeCliLlmOptions {
   groupId: string
   /** 是否流式输出 thinking 块;不设则取 env BOT_INCLUDE_THINKING(1/true/yes/on)。 */
   includeThinking?: boolean
-  /** 额外可访问目录(逗号分隔);不设则取 env BOT_ADD_DIRS。每会话经 --add-dir 注入,扩 Claude 文件工具可达范围。 */
-  addDirs?: string[]
+  /** 额外可访问目录(单个,作 Claude cwd);不设则取 env BOT_ADD_DIR(回退旧 BOT_ADD_DIRS 首项)。
+   *  vibe-ide 风格:直接作 cwd(不用 --add-dir——GLM 后端 --add-dir 不并入默认 `**` 范围),默认 glob 自然覆盖该目录。 */
+  addDir?: string
 }
 
-/** 无状态 Llm:每次 ask 新建会话、ask 完即 kill(userId 被忽略,无多轮续接)。识图等用。 */
-function createStatelessLlm(opts: ClaudeCliLlmOptions, includeThinking: boolean, addDirs: string[]): Llm {
+/** 无状态 Llm:每次 ask 新建会话、ask 完即 kill(userId 被忽略,无多轮续接)。识图等用。
+ *  cwd 取 addDir(若设)否则 base;无 per-session 子目录(无产物回收需求)。 */
+function createStatelessLlm(opts: ClaudeCliLlmOptions, includeThinking: boolean, addDir: string | undefined): Llm {
   return {
     async ask(_userId: string, content: UserContent, onPartial?: OnPartial): Promise<Reply> {
       const session = await ClaudeSession.spawn({
-        cwd: opts.cwd,
+        cwd: addDir ?? opts.cwd,
         systemPrompt: opts.systemPrompt,
         model: opts.model,
         cliCommand: opts.cliCommand,
         includeThinking,
-        addDirs,
       })
       try {
         return await session.send(content, onPartial)
@@ -385,30 +377,31 @@ export async function createClaudeCliLlm(options: ClaudeCliLlmOptions): Promise<
   // base 工作目录:无状态识图共用此目录,也作 per-session 子目录的父目录
   await ensureDir(options.cwd)
   const includeThinking = options.includeThinking ?? parseBoolEnv(process.env.BOT_INCLUDE_THINKING)
-  // 额外可访问目录(env BOT_ADD_DIRS,逗号分隔):每会话经 --add-dir 注入,让 Claude 跨 cwd 之外这些目录读写。
-  // 共享固定目录(如日志/项目目录),跨所有会话/群生效;ensureDir 兜底缺失(--add-dir 要求目录存在,否则 Claude 报错)。
-  const addDirs = options.addDirs ?? parseAddDirs(process.env.BOT_ADD_DIRS)
-  for (const d of addDirs) await ensureDir(d)
-  if (addDirs.length > 0) console.log(`[claude] 额外可访问目录(--add-dir):${addDirs.join(', ')}`)
+  // 额外可访问目录(env BOT_ADD_DIR,单个;回退旧 BOT_ADD_DIRS 首项):vibe-ide 风格直接作 Claude cwd,
+  // 不用 --add-dir(GLM 后端 --add-dir 不并入默认 `**` 搜索范围,搜索形同未生效)。ensureDir 兜底缺失(cwd 须存在)。
+  const addDir = options.addDir ?? parseAddDir(process.env.BOT_ADD_DIR) ?? parseAddDir(process.env.BOT_ADD_DIRS)
+  if (addDir) await ensureDir(addDir)
+  if (addDir) console.log(`[claude] 工作目录(cwd)=${addDir}(vibe-ide 风格,弃用 --add-dir)`)
   if (options.pooled === false) {
-    return createStatelessLlm(options, includeThinking, addDirs)
+    return createStatelessLlm(options, includeThinking, addDir)
   }
   const pool = new SessionPool({
     cwd: options.cwd,
     systemPrompt: options.systemPrompt,
     maxSessions: options.maxSessions ?? 8,
     spawn: async (opts) => {
-      // 每个 pooled 会话开独立子目录(@开启 各不同);按群分子目录防多群同毫秒碰撞
-      const ws = await createSessionWorkspace(opts.cwd, options.groupId)
+      // per-session 子目录:addDir 设则建在其下(预处理产物落此,Claude cwd=addDir 可经默认 `**` 命中);
+      // 否则建在 base 下并即作 cwd(旧行为)。按群分子目录防多群同毫秒碰撞。
+      const base = addDir ?? opts.cwd
+      const ws = await createSessionWorkspace(base, options.groupId)
       return ClaudeSession.spawn({
-        cwd: ws.path,
+        cwd: addDir ?? ws.path,
         ownedWorkspacePath: ws.path,
         systemPrompt: opts.systemPrompt,
         resumeId: opts.resumeId,
         model: options.model,
         cliCommand: options.cliCommand,
         includeThinking,
-        addDirs,
       })
     },
     // 闭包绑定 groupId:每群独立 state 文件,消除跨群 userId 串号(SessionPool 本身仍 userId 键,因每群一个 pool 实例)
