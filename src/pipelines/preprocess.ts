@@ -14,6 +14,7 @@ import type { Models } from '../llm.js'
 import type { UserContent } from '../types.js'
 import { pathToFileURL } from 'node:url'
 import { isAbsolute, join, resolve } from 'node:path'
+import { sanitizeFileName } from '../image.js'
 
 /** session 上保留给框架内部用的键前缀(脚本不应碰)。 */
 const PREPROCESS_KEY = '__preprocess'
@@ -153,8 +154,8 @@ async function runOne(ctx: StepCtx, models: Models, item: FiredItem): Promise<Pr
   return { name: spec.name, input: item.input, summary, artifacts: { dir, files } }
 }
 
-/** 内部:step1 收集的待执行项。 */
-interface FiredItem { spec: PreprocessSpec; match: string; groups: string[]; input: string }
+/** step1 收集的待执行项(导出供 fileRefLandingStep 等更早 step 复用 push)。 */
+export interface FiredItem { spec: PreprocessSpec; match: string; groups: string[]; input: string }
 
 /**
  * 返回 [守卫+触发, 预处理(条件), 问答组装] 三步,插在 text 模型前。多 spec;按输入去重;session.__preprocess 累计。
@@ -177,7 +178,11 @@ export function preprocessSteps(specs: readonly PreprocessSpec[]): Step[] {
         if (st.inputs.includes(m.input)) continue // 按输入去重:同输入已处理过跳过
         fired.push({ spec, match: m.match, groups: m.groups, input: m.input })
       }
-      if (fired.length) ctx.scratch.fired = fired
+      if (fired.length) {
+        // append 不覆盖:更早的 step(如 fileRefLandingStep)可能已 push 过 fired,此处追加而非替换
+        const existing = (ctx.scratch.fired ?? []) as FiredItem[]
+        ctx.scratch.fired = [...existing, ...fired]
+      }
     }),
     // step2: 预处理(条件:仅 scratch.fired 非空才跑,避免每条消息 spawn)
     async (ctx, models) => {
@@ -221,6 +226,41 @@ export function preprocessSteps(specs: readonly PreprocessSpec[]): Step[] {
       }
     }),
   ]
+}
+
+/** 下载函数签名(经 fileRefLandingStep 注入;生产实现替换 sim 桩时只换此函数,架构不动)。 */
+export type DownloadFileFn = (url: string, destDir: string, fileName?: string) => Promise<string>
+
+/**
+ * 附件落地 step:消息带 fileRef(scratch.fileRef,由 handle 从 CARD_MSG 引用文件挂入)→ 下载到
+ * workspacePath/downloads/<sanitize(name)> → 直接 push 到 ctx.scratch.fired(绕过 filePathRegex,
+ * 对含空格的路径稳健),后续 preprocess step2 跑 'file' spec 处理。
+ * 只认名为 'file' 的 spec(无则跳过,避免把文件路径喂给非文件 spec)。按 input 去重(连下载都省)。
+ * 下载失败 → ctx.notify 发 ⚠️ 致歉、不阻断(text-only 问答仍可进行)。
+ */
+export function fileRefLandingStep(specs: readonly PreprocessSpec[], downloadFile: DownloadFileFn): Step {
+  return async (ctx) => {
+    if (!ctx.workspacePath) return
+    const ref = ctx.scratch.fileRef as { url: string; name?: string } | undefined
+    if (!ref?.url) return
+    const spec = specs.find(s => s.name === 'file')
+    if (!spec) return // 无 'file' spec → 不处理(不回退 specs[0],防把文件路径喂错 spec)
+    const destDir = join(ctx.workspacePath, 'downloads')
+    const local = join(destDir, sanitizeFileName(ref.name)) // 与 downloadFile 内部 sanitize 一致,前置 dedup 才省得掉下载
+    const st = getState(ctx.session, spec.name)
+    if (st.inputs.includes(local)) return // 幂等:同 input 已处理过,跳过(连下载都省)
+    let landed: string
+    try {
+      landed = await downloadFile(ref.url, destDir, ref.name)
+    } catch (err) {
+      console.warn('[preprocess] fileRefLanding 下载失败:', err instanceof Error ? err.message : err)
+      ctx.notify?.(`⚠️ 引用文件下载失败:${err instanceof Error ? err.message : String(err)}`)
+      return // 下载失败不阻断;text-only 问答仍可进行
+    }
+    const fired = (ctx.scratch.fired ?? []) as FiredItem[]
+    fired.push({ spec, match: landed, groups: [landed], input: landed })
+    ctx.scratch.fired = fired
+  }
 }
 
 /** 零配置内置 specs:文件路径(任意扩展名)→ scripts/preprocess-log.js(node)。要换脚本/解释器用 BOT_PREPROCESS_CONFIG。 */

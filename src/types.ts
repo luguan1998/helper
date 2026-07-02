@@ -11,6 +11,10 @@ export interface IncomingMessage {
   content?: string
   /** picture 消息的图片 URL / 路径。 */
   pictureUrl?: string
+  /** 引用文件 URL(CARD_MSG 的 preMsg 为 FILE_MSG 时提取,供落地 step 下载)。 */
+  fileUrl?: string
+  /** 引用文件名(含扩展名,落地时 sanitize)。 */
+  fileName?: string
   /** 毫秒时间戳(serverSendTime)。 */
   timestamp: number
   /** 该消息是否 @ 了 bot(当前登录用户)。激活信号:"@助手 开启"。 */

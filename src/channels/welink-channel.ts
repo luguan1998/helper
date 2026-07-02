@@ -145,6 +145,12 @@ function extractUmFileName(content: string): string | undefined {
   return m[1].split('|')[3]
 }
 
+/** 从 `/:um_begin{url|type|...}` 取 type(管道段 1:'File' / 'Img' / …),用于区分被引用的是文件还是图片。 */
+function extractUmType(content: string): string | undefined {
+  const m = content.match(/\/:um_begin\{[^|]*\|([^|]*)\|/)
+  return m?.[1]
+}
+
 /** 把 chatInfo 元素映射成 IncomingMessage。contentType 决定 type 与 content/pictureUrl。 */
 function toIncoming(m: RawWelinkMessage): IncomingMessage {
   const id = String(m.msgId)
@@ -165,16 +171,27 @@ function toIncoming(m: RawWelinkMessage): IncomingMessage {
     case 'CARD_MSG': {
       // content 是被序列化一次的 JSON;取 replyMsg.content 作正文,可前缀引用上下文。
       let text = m.content
+      let fileUrl: string | undefined
+      let fileName: string | undefined
       try {
         const card = JSON.parse(m.content)
         const pre = card?.cardContext?.preMsg
         const reply = card?.cardContext?.replyMsg
-        const quote = pre?.content
-          ? `[引用 ${pre.sender ?? ''}: ${String(pre.content).slice(0, 80)}] `
-          : ''
-        text = quote + (reply?.content ?? m.content)
+        const preContent = String(pre?.content ?? '')
+        // 引用 FILE_MSG:preMsg.content 是 /:um_begin{url|File|...|fileName|...}/:um_end
+        // → 取 URL+fileName 挂到 IncomingMessage,供落地 step 下载后喂 preprocess(绕过路径正则)。
+        if (extractUmType(preContent) === 'File') {
+          fileUrl = extractUmUrl(preContent)
+          fileName = extractUmFileName(preContent) ?? '未知文件'
+          text = `[引用文件: ${fileName}] ${reply?.content ?? ''}`
+        } else {
+          const quote = preContent
+            ? `[引用 ${pre?.sender ?? ''}: ${preContent.slice(0, 80)}] `
+            : ''
+          text = quote + (reply?.content ?? m.content)
+        }
       } catch { /* 解析失败则用原始 content */ }
-      return { id, type: 'text', user, timestamp, at: m.at, content: text }
+      return { id, type: 'text', user, timestamp, at: m.at, content: text, fileUrl, fileName }
     }
     case 'TEXT_MSG':
     default:

@@ -527,7 +527,8 @@ class Assistant implements AssistantHandle {
       const ctx: StepCtx = {
         userId: msg.user,
         content,
-        scratch: {},
+        // 消息级 scratch:fileRef 携带 CARD_MSG 引用文件的 url/fileName(channel 提取),供 fileRefLandingStep 下载
+        scratch: { fileRef: msg.fileUrl ? { url: msg.fileUrl, name: msg.fileName } : undefined },
         // 会话级 scratch(同一引用,step mutate 直接生效到 map,跨消息保留)
         session: s?.scratch ?? {},
         workspacePath: s?.workspacePath,

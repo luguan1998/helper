@@ -140,7 +140,7 @@ stdout → JSON { "summary": "...", "artifacts"?: { "dir": "...", "files": [...]
 6. **不符协议的工具**(`scriptStep`+`spawn` 包装):外部工具接收命令行参数/输出自由文本/需复杂参数 → 用 `scriptStep(fn)` 内联 `child_process.spawn`,自己 parse 输出、写 `session.__preprocess`。spec+`script`+协议是快路径,`scriptStep`+`spawn` 是万能兜底。
 7. **加/换模型** → `src/models.ts` 加 `ModelSpec`;**改接力顺序** → 换 `src/pipelines/default.ts` 的 steps 或传自定义 `pipeline`;**改输出规则** → 换 `outputPolicy` 函数或设 `BOT_PICTURE_OUTPUT=html`(`OutputMode` ∈ text/picture/html)。
 
-> 深入:用户配置手册见 `doc/pre-hook-handbook.md`、协议示例见 `scripts/preprocess-log.js`、扩展全指南见 `doc/session-preprocessing.md`、新手配置见 `doc/getting-started.md`。
+> 深入:用户配置手册见 `doc/pre-hook-handbook.md`、协议示例见 `scripts/preprocess-log.js`、扩展全指南见 `doc/session-preprocessing.md`、新手配置见 `doc/getting-started.md`。文件下载适配器(生产下载 TODO:提取码/验证码)接口契约见 `doc/file-download-api.md`。
 
 ## 环境与约束
 

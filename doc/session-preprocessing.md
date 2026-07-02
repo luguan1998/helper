@@ -44,12 +44,13 @@ exit → endSession(kill Claude → 空目录回收)+ sessionCtx.delete(__prepro
 | 文件 | 角色 |
 |---|---|
 | `src/pipeline.ts` | `StepCtx`(含 `session`/`workspacePath`/`notify`)、`modelStep`/`scriptStep`、`runScriptFile`(返回 `ScriptFileResult`:summary/artifacts 透传) |
-| `src/pipelines/preprocess.ts` | `PreprocessSpec`/`PreprocessResult`/`PreprocessTrigger` 类型;`preprocessSteps(specs)`(三步多 spec);`buildBuiltinSpecs`/`loadPreprocessSpecs`(.mjs 配置载入);`filePathRegex`/`DEFAULT_QA_TEMPLATE`/`DEFAULT_NOTICE_TEMPLATE`/`DEFAULT_CLAUDE_PROMPT` |
-| `src/pipelines/default.ts` | `createDefaultPipeline(specs)`——默认识图→文本接力(接收 specs) |
+| `src/pipelines/preprocess.ts` | `PreprocessSpec`/`PreprocessResult`/`PreprocessTrigger` 类型;`preprocessSteps(specs)`(三步多 spec);`buildBuiltinSpecs`/`loadPreprocessSpecs`(.mjs 配置载入);`filePathRegex`/`DEFAULT_QA_TEMPLATE`/`DEFAULT_NOTICE_TEMPLATE`/`DEFAULT_CLAUDE_PROMPT`;`fileRefLandingStep`/`DownloadFileFn`/导出 `FiredItem`(CARD_MSG 引用文件落地 step,step1 改 append) |
+| `src/pipelines/default.ts` | `createDefaultPipeline(specs)`——默认识图→文本接力;preprocess 前插 `fileRefLandingStep(specs, downloadFile)`(附件落地) |
 | `src/pipelines/log-qa.ts` | `createLogQaPipeline(opts)`——日志问答(内联构造 log spec,限定日志扩展名)+ text |
-| `src/assistant.ts` | `Assistant.sessionCtx`、`route` @开启初始化、`handle` 注入、`pickDefaultPipeline`(async,调 `loadPreprocessSpecs`) |
+| `src/assistant.ts` | `Assistant.sessionCtx`、`route` @开启初始化、`handle` 注入(含挂 `scratch.fileRef`)、`pickDefaultPipeline`(async,调 `loadPreprocessSpecs`) |
 | `src/llm.ts` / `src/session-pool.ts` / `src/claude-client.ts` | `SessionLlm.getWorkspacePath` → `SessionPool.getWorkspacePath` → `ClaudeSession.workspacePath`(接缝内) |
 | `src/workspace.ts` | `createSessionWorkspace`(建子目录)、`removeDirIfEmpty`(空则回收) |
+| `src/image.ts` | `downloadImage`(图片)+ `downloadFile`(文件,**sim 桩**,经 `fileRefLandingStep` 注入;生产下载 TODO:提取码/验证码,见 `doc/file-download-api.md`)+ `sanitizeFileName` |
 | `scripts/preprocess-log.js` | 新协议的 Node.js 示例脚本 |
 
 ### 1.3 为什么 workspacePath 天然一致
