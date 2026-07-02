@@ -40,6 +40,8 @@ npm run sim:bot             # 带 sim 配置跑真实 bot(连模拟器,WELINK_GR
 
 > 群模型:`Channel` 构造时绑定 groupId,所有 send 固定发到该群;`sendXxx(userId,…)` 的 userId 形参仅为兼容端口签名(群模型下被适配器忽略,核心仍传 sender 以备日志/回调)。去重(只处理新消息)由核心 Assistant 持久化水位负责。**其余依赖(state/image/workspace/html-template/win-spawn)各只一个适配器、不开端口,勿投机性加 port。**
 
+> **Mermaid 渲染**:`html-template.ts` 的 `buildHtml` 把 ```` ```mermaid ```` 块(marked-highlight 输出为 `<pre><code class="hljs language-mermaid">`)换成 `<div class="mermaid">`,并在**有 mermaid 块时**才内联 `node_modules/mermaid/dist/mermaid.min.js`(3.5MB 自包含 IIFE,末行挂 `globalThis.mermaid`;**不能用 `.esm.min.mjs`——它仅 29KB 懒加载器,运行时 `import("./chunks/…")` 在内联/blob 下解析不了,diagram 全失败**)+ 经典 `<script>` init(`startOnLoad:false`+逐图 `mermaid.run({nodes:[n]})` try/catch + 失败兜底,设 `window.mermaidReady`)。脚本放 body 末(bundle 先同步挂全局、init 后查 `.mermaid` div)。`puppeteer-renderer` 截图前 `waitForFunction(mermaidReady)` 再 await,确保 SVG 落定再量高。全本地、不联网(公司代理拦 CDN/TLS);`securityLevel:'strict'` 防 html 文件模式标签里塞 `<script>`。无 mermaid 块则 HTML 不增重。
+
 **多模型接力 pipeline**(`src/pipeline.ts` + `src/pipelines/*.ts` + `src/models.ts` + `src/output-policy.ts`):
 - `Step = (ctx: StepCtx, models: Models) => Promise<void>`,**线性 steps、每步 mutate `StepCtx`**;分支写在 script 内(如"若是图片才调 vision"),不引入 DAG。`runPipeline` 顺序跑完返回 `ctx.reply`。
 - `StepCtx { userId, content, scratch(消息级,每条新建), session(会话级,跨消息保留——同一引用,step mutate 直接生效到 Assistant 持有的 map), workspacePath?(会话 workspace 子目录,供脚本写产物 / Claude 读), reply?(上一模型输出), aborted?, onPartial? }`。

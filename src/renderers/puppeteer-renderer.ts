@@ -59,6 +59,18 @@ export function createPuppeteerRenderer(options: PuppeteerRendererOptions = {}):
       try {
         await page.setViewport({ width, height: 800, deviceScaleFactor: DEVICE_SCALE })
         await page.setContent(html, { waitUntil: 'networkidle0' })
+        // 若内联了 mermaid(buildHtml 在有 ```mermaid 块时塞 id="mermaid-bundle"),
+        // 等客户端把 .mermaid 渲染成 SVG 再量高截图——否则截到的是源码文本。
+        // bundle 是 classic 同步脚本、init 设 window.mermaidReady(mermaid.run 落定后 resolve);
+        // waitForFunction 等 promise 被赋上,evaluate 再 await 它。全程失败兜底:不挡截图。
+        if (html.includes('id="mermaid-bundle"')) {
+          await page
+            .waitForFunction(() => !!(window as any).mermaidReady, { timeout: 15000 })
+            .catch(() => {})
+          await page
+            .evaluate(async () => { if ((window as any).mermaidReady) await (window as any).mermaidReady })
+            .catch(() => {})
+        }
         // 量正文真实占地(卡片高 + 上下外边距),按此高度 clip 截图:
         // fullPage 截的是 <html> 的 scrollHeight,而根元素至少撑满视口(800),
         // 内容短时下半截全是 body 浅灰底(看似"全白")。clip 按内容高度精确截取,长短皆宜。
